@@ -1,6 +1,6 @@
 use crate::completions::{
-    CommandCompletion, Completer, CustomCompletion, DirectoryCompletion, DotNuCompletion,
-    FileCompletion, FlagCompletion, VariableCompletion,
+    CommandCompletion, Completer, CompletionOptions, CustomCompletion, DirectoryCompletion,
+    DotNuCompletion, FileCompletion, FlagCompletion, MatchAlgorithm, VariableCompletion,
 };
 use nu_parser::{flatten_expression, parse, FlatShape};
 use nu_protocol::{
@@ -35,8 +35,20 @@ impl NuCompleter {
         offset: usize,
         pos: usize,
     ) -> Vec<Suggestion> {
+        let config = self.engine_state.get_config();
+
+        let mut options = CompletionOptions {
+            case_sensitive: config.case_sensitive_completions,
+            ..Default::default()
+        };
+
+        if config.completion_algorithm == "fuzzy" {
+            options.match_algorithm = MatchAlgorithm::Fuzzy;
+        }
+
         // Fetch
-        let mut suggestions = completer.fetch(working_set, prefix.clone(), new_span, offset, pos);
+        let mut suggestions =
+            completer.fetch(working_set, prefix.clone(), new_span, offset, pos, &options);
 
         // Sort
         suggestions = completer.sort(suggestions, prefix);
@@ -47,6 +59,7 @@ impl NuCompleter {
     fn completion_helper(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         let mut working_set = StateWorkingSet::new(&self.engine_state);
         let offset = working_set.next_span_start();
+        let initial_line = line.to_string();
         let mut line = line.to_string();
         line.insert(pos, 'a');
         let pos = offset + pos;
@@ -141,7 +154,7 @@ impl NuCompleter {
                                     self.engine_state.clone(),
                                     self.stack.clone(),
                                     *decl_id,
-                                    line,
+                                    initial_line,
                                 );
 
                                 return self.process_completion(
@@ -166,35 +179,39 @@ impl NuCompleter {
                                     pos,
                                 );
                             }
-                            FlatShape::Filepath | FlatShape::GlobPattern => {
-                                let mut completer = FileCompletion::new(self.engine_state.clone());
-
-                                return self.process_completion(
-                                    &mut completer,
-                                    &working_set,
-                                    prefix,
-                                    new_span,
-                                    offset,
-                                    pos,
-                                );
-                            }
                             flat_shape => {
                                 let mut completer = CommandCompletion::new(
                                     self.engine_state.clone(),
                                     &working_set,
                                     flattened.clone(),
-                                    flat_idx,
+                                    // flat_idx,
                                     flat_shape.clone(),
                                 );
 
-                                return self.process_completion(
+                                let out: Vec<_> = self.process_completion(
                                     &mut completer,
                                     &working_set,
-                                    prefix,
+                                    prefix.clone(),
                                     new_span,
                                     offset,
                                     pos,
                                 );
+
+                                if out.is_empty() {
+                                    let mut completer =
+                                        FileCompletion::new(self.engine_state.clone());
+
+                                    return self.process_completion(
+                                        &mut completer,
+                                        &working_set,
+                                        prefix,
+                                        new_span,
+                                        offset,
+                                        pos,
+                                    );
+                                }
+
+                                return out;
                             }
                         };
                     }

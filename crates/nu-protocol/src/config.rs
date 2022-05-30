@@ -24,6 +24,30 @@ pub struct ParsedMenu {
     pub source: Value,
 }
 
+/// Definition of a parsed menu from the config object
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Hooks {
+    pub pre_prompt: Option<Value>,
+    pub pre_execution: Option<Value>,
+    pub env_change: Option<Value>,
+}
+
+impl Hooks {
+    pub fn new() -> Self {
+        Self {
+            pre_prompt: None,
+            pre_execution: None,
+            env_change: None,
+        }
+    }
+}
+
+impl Default for Hooks {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Config {
     pub filesize_metric: bool,
@@ -38,13 +62,20 @@ pub struct Config {
     pub use_ansi_coloring: bool,
     pub quick_completions: bool,
     pub partial_completions: bool,
+    pub completion_algorithm: String,
     pub edit_mode: String,
     pub max_history_size: i64,
     pub sync_history_on_enter: bool,
     pub log_level: String,
     pub keybindings: Vec<ParsedKeybinding>,
     pub menus: Vec<ParsedMenu>,
+    pub hooks: Hooks,
     pub rm_always_trash: bool,
+    pub shell_integration: bool,
+    pub buffer_editor: String,
+    pub disable_table_indexes: bool,
+    pub cd_with_abbreviations: bool,
+    pub case_sensitive_completions: bool,
 }
 
 impl Default for Config {
@@ -62,13 +93,20 @@ impl Default for Config {
             use_ansi_coloring: true,
             quick_completions: true,
             partial_completions: true,
+            completion_algorithm: "prefix".into(),
             edit_mode: "emacs".into(),
-            max_history_size: 1000,
+            max_history_size: i64::MAX,
             sync_history_on_enter: true,
             log_level: String::new(),
             keybindings: Vec::new(),
             menus: Vec::new(),
+            hooks: Hooks::new(),
             rm_always_trash: false,
+            shell_integration: false,
+            buffer_editor: String::new(),
+            disable_table_indexes: false,
+            cd_with_abbreviations: false,
+            case_sensitive_completions: false,
         }
     }
 }
@@ -180,6 +218,13 @@ impl Value {
                             eprintln!("$config.partial_completions is not a bool")
                         }
                     }
+                    "completion_algorithm" => {
+                        if let Ok(v) = value.as_string() {
+                            config.completion_algorithm = v.to_lowercase();
+                        } else {
+                            eprintln!("$config.completion_algorithm is not a string")
+                        }
+                    }
                     "rm_always_trash" => {
                         if let Ok(b) = value.as_bool() {
                             config.rm_always_trash = b;
@@ -236,6 +281,48 @@ impl Value {
                             eprintln!("{:?}", e);
                         }
                     },
+                    "hooks" => match create_hooks(value) {
+                        Ok(hooks) => config.hooks = hooks,
+                        Err(e) => {
+                            eprintln!("$config.hooks is not a valid hooks list");
+                            eprintln!("{:?}", e);
+                        }
+                    },
+                    "shell_integration" => {
+                        if let Ok(b) = value.as_bool() {
+                            config.shell_integration = b;
+                        } else {
+                            eprintln!("$config.shell_integration is not a bool")
+                        }
+                    }
+                    "buffer_editor" => {
+                        if let Ok(v) = value.as_string() {
+                            config.buffer_editor = v.to_lowercase();
+                        } else {
+                            eprintln!("$config.buffer_editor is not a string")
+                        }
+                    }
+                    "disable_table_indexes" => {
+                        if let Ok(b) = value.as_bool() {
+                            config.disable_table_indexes = b;
+                        } else {
+                            eprintln!("$config.disable_table_indexes is not a bool")
+                        }
+                    }
+                    "cd_with_abbreviations" => {
+                        if let Ok(b) = value.as_bool() {
+                            config.cd_with_abbreviations = b;
+                        } else {
+                            eprintln!("$config.cd_with_abbreviations is not a bool")
+                        }
+                    }
+                    "case_sensitive_completions" => {
+                        if let Ok(b) = value.as_bool() {
+                            config.case_sensitive_completions = b;
+                        } else {
+                            eprintln!("$config.case_sensitive_completions is not a bool")
+                        }
+                    }
                     x => {
                         eprintln!("$config.{} is an unknown config setting", x)
                     }
@@ -295,6 +382,44 @@ pub fn color_value_string(
     Value::String {
         val: format!("{{{}}}", val),
         span: *span,
+    }
+}
+
+// Parse the hooks to find the blocks to run when the hooks fire
+fn create_hooks(value: &Value) -> Result<Hooks, ShellError> {
+    match value {
+        Value::Record { cols, vals, span } => {
+            let mut hooks = Hooks::new();
+
+            for idx in 0..cols.len() {
+                match cols[idx].as_str() {
+                    "pre_prompt" => hooks.pre_prompt = Some(vals[idx].clone()),
+                    "pre_execution" => hooks.pre_execution = Some(vals[idx].clone()),
+                    "env_change" => hooks.env_change = Some(vals[idx].clone()),
+                    x => {
+                        return Err(ShellError::UnsupportedConfigValue(
+                            "'pre_prompt', 'pre_execution', or 'env_change'".to_string(),
+                            x.to_string(),
+                            *span,
+                        ));
+                    }
+                }
+            }
+
+            Ok(hooks)
+        }
+        v => match v.span() {
+            Ok(span) => Err(ShellError::UnsupportedConfigValue(
+                "record for 'hooks' config".into(),
+                "non-record value".into(),
+                span,
+            )),
+            _ => Err(ShellError::UnsupportedConfigValue(
+                "record for 'hooks' config".into(),
+                "non-record value".into(),
+                Span { start: 0, end: 0 },
+            )),
+        },
     }
 }
 

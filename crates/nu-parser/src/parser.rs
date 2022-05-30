@@ -18,7 +18,8 @@ use nu_protocol::{
 };
 
 use crate::parse_keywords::{
-    parse_alias, parse_def, parse_def_predecl, parse_hide, parse_let, parse_module, parse_use,
+    parse_alias, parse_def, parse_def_predecl, parse_hide, parse_let, parse_module, parse_overlay,
+    parse_use,
 };
 
 use log::trace;
@@ -123,6 +124,17 @@ pub fn trim_quotes(bytes: &[u8]) -> &[u8] {
         &bytes[1..(bytes.len() - 1)]
     } else {
         bytes
+    }
+}
+
+pub fn trim_quotes_str(s: &str) -> &str {
+    if (s.starts_with('"') && s.ends_with('"') && s.len() > 1)
+        || (s.starts_with('\'') && s.ends_with('\'') && s.len() > 1)
+        || (s.starts_with('`') && s.ends_with('`') && s.len() > 1)
+    {
+        &s[1..(s.len() - 1)]
+    } else {
+        s
     }
 }
 
@@ -264,8 +276,11 @@ pub fn parse_external_call(
         error = error.or(err);
         Box::new(arg)
     } else {
+        let (contents, err) = unescape_unquote_string(&head_contents, head_span);
+        error = error.or(err);
+
         Box::new(Expression {
-            expr: Expr::String(String::from_utf8_lossy(&head_contents).to_string()),
+            expr: Expr::String(contents),
             span: head_span,
             ty: Type::String,
             custom_completion: None,
@@ -285,8 +300,11 @@ pub fn parse_external_call(
             error = error.or(err);
             args.push(arg);
         } else {
+            let (contents, err) = unescape_unquote_string(contents, *span);
+            error = error.or(err);
+
             args.push(Expression {
-                expr: Expr::String(String::from_utf8_lossy(contents).to_string()),
+                expr: Expr::String(contents),
                 span: *span,
                 ty: Type::String,
                 custom_completion: None,
@@ -1076,7 +1094,11 @@ pub fn parse_binary(
 ) -> (Expression, Option<ParseError>) {
     let (hex_value, err) = parse_binary_with_base(working_set, span, 16, 2, b"0x[", b"]");
     if err.is_some() {
-        return parse_binary_with_base(working_set, span, 2, 8, b"0b[", b"]");
+        let (octal_value, err) = parse_binary_with_base(working_set, span, 8, 3, b"0o[", b"]");
+        if err.is_some() {
+            return parse_binary_with_base(working_set, span, 2, 8, b"0b[", b"]");
+        }
+        return (octal_value, err);
     }
     (hex_value, err)
 }
@@ -1726,6 +1748,7 @@ pub fn parse_cell_path(
     working_set: &mut StateWorkingSet,
     tokens: impl Iterator<Item = Token>,
     mut expect_dot: bool,
+    expand_aliases_denylist: &[usize],
     span: Span,
 ) -> (Vec<PathMember>, Option<ParseError>) {
     let mut error = None;
@@ -1755,7 +1778,8 @@ pub fn parse_cell_path(
                     span,
                 }),
                 _ => {
-                    let (result, err) = parse_string(working_set, path_element.span);
+                    let (result, err) =
+                        parse_string(working_set, path_element.span, expand_aliases_denylist);
                     error = error.or(err);
                     match result {
                         Expression {
@@ -1885,7 +1909,13 @@ pub fn parse_full_cell_path(
             );
         };
 
-        let (tail, err) = parse_cell_path(working_set, tokens, expect_dot, span);
+        let (tail, err) = parse_cell_path(
+            working_set,
+            tokens,
+            expect_dot,
+            expand_aliases_denylist,
+            span,
+        );
         error = error.or(err);
 
         if !tail.is_empty() {
@@ -1920,10 +1950,10 @@ pub fn parse_directory(
     span: Span,
 ) -> (Expression, Option<ParseError>) {
     let bytes = working_set.get_span_contents(span);
-    let bytes = trim_quotes(bytes);
+    let (token, err) = unescape_unquote_string(bytes, span);
     trace!("parsing: directory");
 
-    if let Ok(token) = String::from_utf8(bytes.into()) {
+    if err.is_none() {
         trace!("-- found {}", token);
         (
             Expression {
@@ -1947,10 +1977,10 @@ pub fn parse_filepath(
     span: Span,
 ) -> (Expression, Option<ParseError>) {
     let bytes = working_set.get_span_contents(span);
-    let bytes = trim_quotes(bytes);
+    let (token, err) = unescape_unquote_string(bytes, span);
     trace!("parsing: filepath");
 
-    if let Ok(token) = String::from_utf8(bytes.into()) {
+    if err.is_none() {
         trace!("-- found {}", token);
         (
             Expression {
@@ -2259,12 +2289,11 @@ pub fn parse_glob_pattern(
     working_set: &mut StateWorkingSet,
     span: Span,
 ) -> (Expression, Option<ParseError>) {
+    let bytes = working_set.get_span_contents(span);
+    let (token, err) = unescape_unquote_string(bytes, span);
     trace!("parsing: glob pattern");
 
-    let bytes = working_set.get_span_contents(span);
-    let bytes = trim_quotes(bytes);
-
-    if let Ok(token) = String::from_utf8(bytes.into()) {
+    if err.is_none() {
         trace!("-- found {}", token);
         (
             Expression {
@@ -2475,10 +2504,16 @@ pub fn unescape_unquote_string(bytes: &[u8], span: Span) -> (String, Option<Pars
 pub fn parse_string(
     working_set: &mut StateWorkingSet,
     span: Span,
+    expand_aliases_denylist: &[usize],
 ) -> (Expression, Option<ParseError>) {
     trace!("parsing: string");
 
     let bytes = working_set.get_span_contents(span);
+
+    // Check for bare word interpolation
+    if bytes[0] != b'\'' && bytes[0] != b'"' && bytes[0] != b'`' && bytes.contains(&b'(') {
+        return parse_string_interpolation(working_set, span, expand_aliases_denylist);
+    }
 
     let (s, err) = unescape_unquote_string(bytes, span);
 
@@ -2670,7 +2705,7 @@ pub fn parse_import_pattern(
         );
     };
 
-    let maybe_overlay_id = working_set.find_overlay(&head);
+    let maybe_module_id = working_set.find_module(&head);
 
     let (import_pattern, err) = if let Some(tail_span) = spans.get(1) {
         // FIXME: expand this to handle deeper imports once we support module imports
@@ -2680,7 +2715,7 @@ pub fn parse_import_pattern(
                 ImportPattern {
                     head: ImportPatternHead {
                         name: head,
-                        id: maybe_overlay_id,
+                        id: maybe_module_id,
                         span: *head_span,
                     },
                     members: vec![ImportPatternMember::Glob { span: *tail_span }],
@@ -2713,7 +2748,7 @@ pub fn parse_import_pattern(
                         ImportPattern {
                             head: ImportPatternHead {
                                 name: head,
-                                id: maybe_overlay_id,
+                                id: maybe_module_id,
                                 span: *head_span,
                             },
                             members: vec![ImportPatternMember::List { names: output }],
@@ -2726,7 +2761,7 @@ pub fn parse_import_pattern(
                     ImportPattern {
                         head: ImportPatternHead {
                             name: head,
-                            id: maybe_overlay_id,
+                            id: maybe_module_id,
                             span: *head_span,
                         },
                         members: vec![],
@@ -2741,7 +2776,7 @@ pub fn parse_import_pattern(
                 ImportPattern {
                     head: ImportPatternHead {
                         name: head,
-                        id: maybe_overlay_id,
+                        id: maybe_module_id,
                         span: *head_span,
                     },
                     members: vec![ImportPatternMember::Name {
@@ -2758,7 +2793,7 @@ pub fn parse_import_pattern(
             ImportPattern {
                 head: ImportPatternHead {
                     name: head,
-                    id: maybe_overlay_id,
+                    id: maybe_module_id,
                     span: *head_span,
                 },
                 members: vec![],
@@ -3899,7 +3934,7 @@ pub fn parse_value(
         SyntaxShape::Filepath => parse_filepath(working_set, span),
         SyntaxShape::Directory => parse_directory(working_set, span),
         SyntaxShape::GlobPattern => parse_glob_pattern(working_set, span),
-        SyntaxShape::String => parse_string(working_set, span),
+        SyntaxShape::String => parse_string(working_set, span, expand_aliases_denylist),
         SyntaxShape::Binary => parse_binary(working_set, span),
         SyntaxShape::Signature => {
             if bytes.starts_with(b"[") {
@@ -3940,7 +3975,8 @@ pub fn parse_value(
 
             let tokens = tokens.into_iter().peekable();
 
-            let (cell_path, err) = parse_cell_path(working_set, tokens, false, span);
+            let (cell_path, err) =
+                parse_cell_path(working_set, tokens, false, expand_aliases_denylist, span);
             error = error.or(err);
 
             (
@@ -4020,7 +4056,6 @@ pub fn parse_operator(
         b">" => Operator::GreaterThan,
         b">=" => Operator::GreaterThanOrEqual,
         b"=~" => Operator::RegexMatch,
-        b"=^" => Operator::StartsWith,
         b"!~" => Operator::NotRegexMatch,
         b"+" => Operator::Plus,
         b"-" => Operator::Minus,
@@ -4029,6 +4064,8 @@ pub fn parse_operator(
         b"in" => Operator::In,
         b"not-in" => Operator::NotIn,
         b"mod" => Operator::Modulo,
+        b"starts-with" => Operator::StartsWith,
+        b"ends-with" => Operator::EndsWith,
         b"&&" | b"and" => Operator::And,
         b"||" | b"or" => Operator::Or,
         b"**" => Operator::Pow,
@@ -4255,13 +4292,16 @@ pub fn parse_expression(
                 },
             );
             let rhs = if spans[pos].start + point < spans[pos].end {
-                parse_string_strict(
-                    working_set,
-                    Span {
-                        start: spans[pos].start + point,
-                        end: spans[pos].end,
-                    },
-                )
+                let rhs_span = Span {
+                    start: spans[pos].start + point,
+                    end: spans[pos].end,
+                };
+
+                if working_set.get_span_contents(rhs_span).starts_with(b"$") {
+                    parse_dollar_expr(working_set, rhs_span, expand_aliases_denylist)
+                } else {
+                    parse_string_strict(working_set, rhs_span)
+                }
             } else {
                 (
                     Expression {
@@ -4331,7 +4371,19 @@ pub fn parse_expression(
                     expand_aliases_denylist,
                 )
                 .0,
-                Some(ParseError::BuiltinCommandInPipeline("let".into(), spans[0])),
+                Some(ParseError::LetInPipeline(
+                    String::from_utf8_lossy(match spans.len() {
+                        1 | 2 | 3 => b"value",
+                        _ => working_set.get_span_contents(spans[3]),
+                    })
+                    .to_string(),
+                    String::from_utf8_lossy(match spans.len() {
+                        1 => b"variable",
+                        _ => working_set.get_span_contents(spans[1]),
+                    })
+                    .to_string(),
+                    spans[0],
+                )),
             ),
             b"alias" => (
                 parse_call(
@@ -4369,6 +4421,31 @@ pub fn parse_expression(
                 .0,
                 Some(ParseError::BuiltinCommandInPipeline("use".into(), spans[0])),
             ),
+            b"overlay" => {
+                if spans.len() > 1 && working_set.get_span_contents(spans[1]) == b"list" {
+                    // whitelist 'overlay list'
+                    parse_call(
+                        working_set,
+                        &spans[pos..],
+                        spans[0],
+                        expand_aliases_denylist,
+                    )
+                } else {
+                    (
+                        parse_call(
+                            working_set,
+                            &spans[pos..],
+                            spans[0],
+                            expand_aliases_denylist,
+                        )
+                        .0,
+                        Some(ParseError::BuiltinCommandInPipeline(
+                            "overlay".into(),
+                            spans[0],
+                        )),
+                    )
+                }
+            }
             b"source" => (
                 parse_call(
                     working_set,
@@ -4523,14 +4600,46 @@ pub fn parse_builtin_commands(
         b"alias" => parse_alias(working_set, &lite_command.parts, expand_aliases_denylist),
         b"module" => parse_module(working_set, &lite_command.parts, expand_aliases_denylist),
         b"use" => parse_use(working_set, &lite_command.parts, expand_aliases_denylist),
+        b"overlay" => parse_overlay(working_set, &lite_command.parts, expand_aliases_denylist),
         b"source" => parse_source(working_set, &lite_command.parts, expand_aliases_denylist),
-        b"export" => (
-            garbage_pipeline(&lite_command.parts),
-            Some(ParseError::UnexpectedKeyword(
-                "export".into(),
-                lite_command.parts[0],
-            )),
-        ),
+        b"export" => {
+            if let Some(decl_id) = working_set.find_decl(b"alias") {
+                let (call, _) = parse_internal_call(
+                    working_set,
+                    lite_command.parts[0],
+                    &lite_command.parts[1..],
+                    decl_id,
+                    expand_aliases_denylist,
+                );
+                if call.has_flag("help") {
+                    (
+                        Pipeline::from_vec(vec![Expression {
+                            expr: Expr::Call(call),
+                            span: span(&lite_command.parts),
+                            ty: Type::Any,
+                            custom_completion: None,
+                        }]),
+                        None,
+                    )
+                } else {
+                    (
+                        garbage_pipeline(&lite_command.parts),
+                        Some(ParseError::UnexpectedKeyword(
+                            "export".into(),
+                            lite_command.parts[0],
+                        )),
+                    )
+                }
+            } else {
+                (
+                    garbage_pipeline(&lite_command.parts),
+                    Some(ParseError::UnexpectedKeyword(
+                        "export".into(),
+                        lite_command.parts[0],
+                    )),
+                )
+            }
+        }
         b"hide" => parse_hide(working_set, &lite_command.parts, expand_aliases_denylist),
         #[cfg(feature = "plugin")]
         b"register" => parse_register(working_set, &lite_command.parts, expand_aliases_denylist),

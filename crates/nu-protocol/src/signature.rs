@@ -57,6 +57,7 @@ pub enum Category {
     Viewers,
     Hash,
     Generators,
+    Chart,
     Custom(String),
     Deprecated,
 }
@@ -83,6 +84,7 @@ impl std::fmt::Display for Category {
             Category::Viewers => "viewers",
             Category::Hash => "hash",
             Category::Generators => "generators",
+            Category::Chart => "chart",
             Category::Custom(name) => name,
             Category::Deprecated => "deprecated",
         };
@@ -122,6 +124,23 @@ impl Eq for Signature {}
 
 impl Signature {
     pub fn new(name: impl Into<String>) -> Signature {
+        Signature {
+            name: name.into(),
+            usage: String::new(),
+            extra_usage: String::new(),
+            search_terms: vec![],
+            required_positional: vec![],
+            optional_positional: vec![],
+            rest_positional: None,
+            named: vec![],
+            is_filter: false,
+            creates_scope: false,
+            category: Category::Default,
+        }
+    }
+
+    // Add a default help option to a signature
+    pub fn add_help(mut self) -> Signature {
         // default help flag
         let flag = Flag {
             long: "help".into(),
@@ -132,24 +151,13 @@ impl Signature {
             var_id: None,
             default_value: None,
         };
-
-        Signature {
-            name: name.into(),
-            usage: String::new(),
-            extra_usage: String::new(),
-            search_terms: vec![],
-            required_positional: vec![],
-            optional_positional: vec![],
-            rest_positional: None,
-            named: vec![flag],
-            is_filter: false,
-            creates_scope: false,
-            category: Category::Default,
-        }
+        self.named.push(flag);
+        self
     }
 
+    // Build an internal signature with default help option
     pub fn build(name: impl Into<String>) -> Signature {
-        Signature::new(name.into())
+        Signature::new(name.into()).add_help()
     }
 
     /// Add a description to the signature

@@ -23,6 +23,11 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
         #[cfg(feature = "dataframe")]
         add_dataframe_decls(&mut working_set);
 
+        // Database-related
+        // Adds all related commands to query databases
+        #[cfg(feature = "database")]
+        add_database_decls(&mut working_set);
+
         // Core
         bind_command! {
             Alias,
@@ -47,6 +52,11 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             History,
             If,
             Ignore,
+            Overlay,
+            OverlayAdd,
+            OverlayList,
+            OverlayNew,
+            OverlayRemove,
             Let,
             Metadata,
             Module,
@@ -55,6 +65,11 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             Use,
             Version,
         };
+
+        // Charts
+        bind_command! {
+            Histogram
+        }
 
         // Filters
         bind_command! {
@@ -153,6 +168,7 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             Decode,
             DetectColumns,
             Format,
+            FileSize,
             Parse,
             Size,
             Split,
@@ -179,6 +195,7 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             StrStartsWith,
             StrSubstring,
             StrTrim,
+            StrTitleCase,
             StrUpcase
         };
 
@@ -194,6 +211,7 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             Save,
             Touch,
             Glob,
+            Watch,
         };
 
         // Platform
@@ -259,6 +277,7 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             ToJson,
             ToMd,
             ToNuon,
+            ToText,
             ToToml,
             ToTsv,
             ToCsv,
@@ -297,6 +316,9 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             LetEnv,
             LoadEnv,
             WithEnv,
+            ConfigNu,
+            ConfigEnv,
+            ConfigMeta,
         };
 
         // Math
@@ -346,6 +368,7 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             Cal,
             Seq,
             SeqDate,
+            SeqChar,
         };
 
         // Hash
@@ -359,11 +382,6 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
         // Experimental
         bind_command! {
             ViewSource,
-        };
-
-        // Database-related
-        bind_command! {
-            QueryDb
         };
 
         // Deprecated

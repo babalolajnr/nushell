@@ -1,5 +1,6 @@
 use core::fmt::Write;
 use nu_engine::get_columns;
+use nu_parser::escape_quote_string;
 use nu_protocol::ast::{Call, RangeInclusion};
 use nu_protocol::engine::{Command, EngineState, Stack};
 use nu_protocol::{
@@ -38,7 +39,7 @@ impl Command for ToNuon {
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
-            description: "Outputs a nuon string representing the contents of this table",
+            description: "Outputs a nuon string representing the contents of this list",
             example: "[1 2 3] | to nuon",
             result: Some(Value::test_string("[1, 2, 3]")),
         }]
@@ -137,17 +138,22 @@ fn value_to_string(v: &Value, span: Span) -> Result<String, ShellError> {
             }
             Ok(format!("{{{}}}", collection.join(", ")))
         }
-        Value::String { val, .. } => Ok(format!("\"{}\"", escape(val))),
+        Value::String { val, .. } => Ok(escape_quote_string(val)),
     }
-}
-
-fn escape(input: &str) -> String {
-    let output = input.replace('\\', "\\\\");
-    output.replace('"', "\\\"")
 }
 
 fn to_nuon(call: &Call, input: PipelineData) -> Result<String, ShellError> {
     let v = input.into_value(call.head);
 
     value_to_string(&v, call.head)
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn test_examples() {
+        use super::ToNuon;
+        use crate::test_examples;
+        test_examples(ToNuon {})
+    }
 }

@@ -1,6 +1,10 @@
+use crate::{
+    ast::{Call, PathMember},
+    engine::{EngineState, Stack, StateWorkingSet},
+    format_error, Config, ListStream, RawStream, ShellError, Span, Value,
+};
+use nu_utils::{stdout_write_all_and_flush, stdout_write_all_as_binary_and_flush};
 use std::sync::{atomic::AtomicBool, Arc};
-
-use crate::{ast::PathMember, Config, ListStream, RawStream, ShellError, Span, Value};
 
 /// The foundational abstraction for input and output to commands
 ///
@@ -407,6 +411,91 @@ impl PipelineData {
                 }
             }
         }
+    }
+
+    pub fn print(
+        self,
+        engine_state: &EngineState,
+        stack: &mut Stack,
+        no_newline: bool,
+    ) -> Result<(), ShellError> {
+        // If the table function is in the declarations, then we can use it
+        // to create the table value that will be printed in the terminal
+
+        let config = engine_state.get_config();
+        // let stdout = std::io::stdout();
+
+        if let PipelineData::ExternalStream {
+            stdout: stream,
+            exit_code,
+            ..
+        } = self
+        {
+            if let Some(stream) = stream {
+                for s in stream {
+                    let s_live = s?;
+                    let bin_output = s_live.as_binary()?;
+                    stdout_write_all_as_binary_and_flush(bin_output)?
+                }
+            }
+
+            // Make sure everything has finished
+            if let Some(exit_code) = exit_code {
+                let _: Vec<_> = exit_code.into_iter().collect();
+            }
+
+            return Ok(());
+        }
+
+        match engine_state.find_decl("table".as_bytes(), &[]) {
+            Some(decl_id) => {
+                let table = engine_state.get_decl(decl_id).run(
+                    engine_state,
+                    stack,
+                    &Call::new(Span::new(0, 0)),
+                    self,
+                )?;
+
+                for item in table {
+                    let mut out = if let Value::Error { error } = item {
+                        let working_set = StateWorkingSet::new(engine_state);
+
+                        format_error(&working_set, &error)
+                    } else if no_newline {
+                        item.into_string("", config)
+                    } else {
+                        item.into_string("\n", config)
+                    };
+
+                    if !no_newline {
+                        out.push('\n');
+                    }
+
+                    stdout_write_all_and_flush(out)?
+                }
+            }
+            None => {
+                for item in self {
+                    let mut out = if let Value::Error { error } = item {
+                        let working_set = StateWorkingSet::new(engine_state);
+
+                        format_error(&working_set, &error)
+                    } else if no_newline {
+                        item.into_string("", config)
+                    } else {
+                        item.into_string("\n", config)
+                    };
+
+                    if !no_newline {
+                        out.push('\n');
+                    }
+
+                    stdout_write_all_and_flush(out)?
+                }
+            }
+        };
+
+        Ok(())
     }
 }
 

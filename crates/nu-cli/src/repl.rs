@@ -1,25 +1,27 @@
-use crate::reedline_config::add_menus;
-use crate::{completions::NuCompleter, NuHighlighter, NuValidator, NushellPrompt};
-use crate::{prompt_update, reedline_config};
 use crate::{
-    reedline_config::KeybindingsMode,
+    completions::NuCompleter,
+    prompt_update,
+    reedline_config::{add_menus, create_keybindings, KeybindingsMode},
     util::{eval_source, report_error},
+    NuHighlighter, NuValidator, NushellPrompt,
 };
-use log::info;
-use log::trace;
+use log::{info, trace};
 use miette::{IntoDiagnostic, Result};
 use nu_color_config::get_color_config;
-use nu_engine::convert_env_values;
+use nu_engine::{convert_env_values, eval_block};
 use nu_parser::lex;
-use nu_protocol::engine::Stack;
-use nu_protocol::PipelineData;
 use nu_protocol::{
-    engine::{EngineState, StateWorkingSet},
-    ShellError, Span, Value,
+    engine::{EngineState, Stack, StateWorkingSet},
+    BlockId, PipelineData, PositionalArg, ShellError, Span, Value,
 };
 use reedline::{DefaultHinter, Emacs, Vi};
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::{sync::atomic::Ordering, time::Instant};
+
+const PRE_EXECUTE_MARKER: &str = "\x1b]133;A\x1b\\";
+const PRE_PROMPT_MARKER: &str = "\x1b]133;C\x1b\\";
+const RESET_APPLICATION_MODE: &str = "\x1b[?1l";
 
 pub fn evaluate_repl(
     engine_state: &mut EngineState,
@@ -157,6 +159,27 @@ pub fn evaluate_repl(
             }
         };
 
+        let buffer_editor = if !config.buffer_editor.is_empty() {
+            Some(config.buffer_editor.clone())
+        } else {
+            stack
+                .get_env_var(engine_state, "EDITOR")
+                .map(|v| v.as_string().unwrap_or_default())
+                .filter(|v| !v.is_empty())
+                .or_else(|| {
+                    stack
+                        .get_env_var(engine_state, "VISUAL")
+                        .map(|v| v.as_string().unwrap_or_default())
+                        .filter(|v| !v.is_empty())
+                })
+        };
+
+        line_editor = if let Some(buffer_editor) = buffer_editor {
+            line_editor.with_buffer_editor(buffer_editor, "nu".into())
+        } else {
+            line_editor
+        };
+
         if config.sync_history_on_enter {
             if is_perf_true {
                 info!("sync history {}:{}:{}", file!(), line!(), column!());
@@ -169,7 +192,7 @@ pub fn evaluate_repl(
         }
 
         // Changing the line editor based on the found keybindings
-        line_editor = match reedline_config::create_keybindings(config) {
+        line_editor = match create_keybindings(config) {
             Ok(keybindings) => match keybindings {
                 KeybindingsMode::Emacs(keybindings) => {
                     let edit_mode = Box::new(Emacs::new(keybindings));
@@ -194,6 +217,65 @@ pub fn evaluate_repl(
             info!("prompt_update {}:{}:{}", file!(), line!(), column!());
         }
 
+        // Right before we start our prompt and take input from the user,
+        // fire the "pre_prompt" hook
+        if let Some(hook) = &config.hooks.pre_prompt {
+            if let Err(err) = run_hook(engine_state, stack, vec![], hook) {
+                let working_set = StateWorkingSet::new(engine_state);
+                report_error(&working_set, &err);
+            }
+        }
+
+        // Next, check all the environment variables they ask for
+        // fire the "env_change" hook
+        if let Some(hook) = config.hooks.env_change.clone() {
+            match hook {
+                Value::Record {
+                    cols, vals: blocks, ..
+                } => {
+                    for (idx, env_var) in cols.iter().enumerate() {
+                        let before = engine_state
+                            .previous_env_vars
+                            .get(env_var)
+                            .cloned()
+                            .unwrap_or_default();
+                        let after = stack.get_env_var(engine_state, env_var).unwrap_or_default();
+                        if before != after {
+                            if let Err(err) = run_hook(
+                                engine_state,
+                                stack,
+                                vec![before, after.clone()],
+                                &blocks[idx],
+                            ) {
+                                let working_set = StateWorkingSet::new(engine_state);
+                                report_error(&working_set, &err);
+                            }
+
+                            engine_state
+                                .previous_env_vars
+                                .insert(env_var.to_string(), after);
+                        }
+                    }
+                }
+                x => {
+                    let working_set = StateWorkingSet::new(engine_state);
+                    report_error(
+                        &working_set,
+                        &ShellError::TypeMismatch(
+                            "record for 'env_change' hook".to_string(),
+                            x.span().unwrap_or_else(|_| Span::new(0, 0)),
+                        ),
+                    )
+                }
+            }
+        }
+
+        config = engine_state.get_config();
+
+        if config.shell_integration {
+            run_ansi_sequence(PRE_EXECUTE_MARKER)?;
+        }
+
         let prompt =
             prompt_update::update_prompt(config, engine_state, stack, &mut nu_prompt, is_perf_true);
 
@@ -210,14 +292,38 @@ pub fn evaluate_repl(
 
         let input = line_editor.read_line(prompt);
 
-        if config.use_ansi_coloring {
-            // Just before running a command/program, send the escape code (see
-            // https://sw.kovidgoyal.net/kitty/shell-integration/#notes-for-shell-developers)
-            print!("\x1b]133;C\x1b\\");
-        }
-
         match input {
             Ok(Signal::Success(s)) => {
+                // Right before we start running the code the user gave us,
+                // fire the "pre_execution" hook
+                if let Some(hook) = &config.hooks.pre_execution {
+                    if let Err(err) = run_hook(engine_state, stack, vec![], hook) {
+                        let working_set = StateWorkingSet::new(engine_state);
+                        report_error(&working_set, &err);
+                    }
+                }
+
+                if config.shell_integration {
+                    run_ansi_sequence(RESET_APPLICATION_MODE)?;
+                    run_ansi_sequence(PRE_PROMPT_MARKER)?;
+                    if let Some(cwd) = stack.get_env_var(engine_state, "PWD") {
+                        let path = cwd.as_string()?;
+                        // Try to abbreviate string for windows title
+                        let maybe_abbrev_path = if let Some(p) = nu_path::home_dir() {
+                            path.replace(&p.as_path().display().to_string(), "~")
+                        } else {
+                            path
+                        };
+
+                        // Set window title too
+                        // https://tldp.org/HOWTO/Xterm-Title-3.html
+                        // ESC]0;stringBEL -- Set icon name and window title to string
+                        // ESC]1;stringBEL -- Set icon name to string
+                        // ESC]2;stringBEL -- Set window title to string
+                        run_ansi_sequence(&format!("\x1b]2;{}\x07", maybe_abbrev_path))?;
+                    }
+                }
+
                 let start_time = Instant::now();
                 let tokens = lex(s.as_bytes(), 0, &[], &[], false);
                 // Check if this is a single call to a directory, if so auto-cd
@@ -243,7 +349,6 @@ pub fn evaluate_repl(
                                 &ShellError::DirectoryNotFound(tokens.0[0].span, None),
                             );
                         }
-
                         let path = nu_path::canonicalize_with(path, &cwd)
                             .expect("internal error: cannot canonicalize known path");
                         (path.to_string_lossy().to_string(), tokens.0[0].span)
@@ -289,21 +394,22 @@ pub fn evaluate_repl(
                         &format!("entry #{}", entry_num),
                         PipelineData::new(Span::new(0, 0)),
                     );
-
-                    stack.add_env_var(
-                        "CMD_DURATION_MS".into(),
-                        Value::String {
-                            val: format!("{}", start_time.elapsed().as_millis()),
-                            span: Span { start: 0, end: 0 },
-                        },
-                    );
                 }
+
+                stack.add_env_var(
+                    "CMD_DURATION_MS".into(),
+                    Value::String {
+                        val: format!("{}", start_time.elapsed().as_millis()),
+                        span: Span { start: 0, end: 0 },
+                    },
+                );
+
                 // FIXME: permanent state changes like this hopefully in time can be removed
                 // and be replaced by just passing the cwd in where needed
                 if let Some(cwd) = stack.get_env_var(engine_state, "PWD") {
                     let path = cwd.as_string()?;
                     let _ = std::env::set_current_dir(path);
-                    engine_state.env_vars.insert("PWD".into(), cwd);
+                    engine_state.add_env_var("PWD".into(), cwd);
                 }
             }
             Ok(Signal::CtrlC) => {
@@ -324,4 +430,88 @@ pub fn evaluate_repl(
     }
 
     Ok(())
+}
+
+fn run_ansi_sequence(seq: &str) -> Result<(), ShellError> {
+    match io::stdout().write_all(seq.as_bytes()) {
+        Ok(it) => it,
+        Err(err) => {
+            return Err(ShellError::GenericError(
+                "Error writing ansi sequence".into(),
+                err.to_string(),
+                Some(Span { start: 0, end: 0 }),
+                None,
+                Vec::new(),
+            ));
+        }
+    };
+    io::stdout().flush().map_err(|e| {
+        ShellError::GenericError(
+            "Error flushing stdio".into(),
+            e.to_string(),
+            Some(Span { start: 0, end: 0 }),
+            None,
+            Vec::new(),
+        )
+    })
+}
+
+pub fn run_hook(
+    engine_state: &EngineState,
+    stack: &mut Stack,
+    arguments: Vec<Value>,
+    value: &Value,
+) -> Result<(), ShellError> {
+    match value {
+        Value::List { vals, .. } => {
+            for val in vals {
+                run_hook(engine_state, stack, arguments.clone(), val)?
+            }
+            Ok(())
+        }
+        Value::Block {
+            val: block_id,
+            span,
+            ..
+        } => run_hook_block(engine_state, stack, *block_id, arguments, *span),
+        x => match x.span() {
+            Ok(span) => Err(ShellError::MissingConfigValue(
+                "block for hook in config".into(),
+                span,
+            )),
+            _ => Err(ShellError::MissingConfigValue(
+                "block for hook in config".into(),
+                Span { start: 0, end: 0 },
+            )),
+        },
+    }
+}
+
+pub fn run_hook_block(
+    engine_state: &EngineState,
+    stack: &mut Stack,
+    block_id: BlockId,
+    arguments: Vec<Value>,
+    span: Span,
+) -> Result<(), ShellError> {
+    let block = engine_state.get_block(block_id);
+    let input = PipelineData::new(span);
+
+    let mut callee_stack = stack.gather_captures(&block.captures);
+
+    for (idx, PositionalArg { var_id, .. }) in
+        block.signature.required_positional.iter().enumerate()
+    {
+        if let Some(var_id) = var_id {
+            callee_stack.add_var(*var_id, arguments[idx].clone())
+        }
+    }
+
+    match eval_block(engine_state, &mut callee_stack, block, input, false, false) {
+        Ok(pipeline_data) => match pipeline_data.into_value(span) {
+            Value::Error { error } => Err(error),
+            _ => Ok(()),
+        },
+        Err(err) => Err(err),
+    }
 }

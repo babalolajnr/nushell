@@ -6,6 +6,7 @@ mod cal;
 mod cd;
 mod compact;
 mod cp;
+mod date;
 mod def;
 mod default;
 mod drop;
@@ -39,6 +40,7 @@ mod open;
 mod parse;
 mod path;
 mod prepend;
+#[cfg(feature = "database")]
 mod query;
 mod random;
 mod range;

@@ -1,6 +1,6 @@
+mod charting;
 mod conversions;
 mod core_commands;
-mod database;
 mod date;
 mod default_context;
 mod deprecated;
@@ -16,16 +16,15 @@ mod math;
 mod network;
 mod path;
 mod platform;
-mod query;
 mod random;
 mod shells;
 mod strings;
 mod system;
 mod viewers;
 
+pub use charting::*;
 pub use conversions::*;
 pub use core_commands::*;
-pub use database::*;
 pub use date::*;
 pub use default_context::*;
 pub use deprecated::*;
@@ -42,7 +41,6 @@ pub use math::*;
 pub use network::*;
 pub use path::*;
 pub use platform::*;
-pub use query::*;
 pub use random::*;
 pub use shells::*;
 pub use strings::*;
@@ -54,3 +52,9 @@ mod dataframe;
 
 #[cfg(feature = "dataframe")]
 pub use dataframe::*;
+
+#[cfg(feature = "database")]
+mod database;
+
+#[cfg(feature = "database")]
+pub use database::*;
