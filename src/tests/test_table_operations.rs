@@ -23,7 +23,7 @@ fn cell_path_var2() -> TestResult {
 #[test]
 fn flatten_simple_list() -> TestResult {
     run_test(
-        "[[N, u, s, h, e, l, l]] | flatten | str collect (char nl)",
+        "[[N, u, s, h, e, l, l]] | flatten | str join (char nl)",
         "N\nu\ns\nh\ne\nl\nl",
     )
 }
@@ -259,4 +259,12 @@ fn length_defaulted_columns() -> TestResult {
 #[test]
 fn get_fuzzy() -> TestResult {
     run_test("(ls | get -i foo) == $nothing", "true")
+}
+
+#[test]
+fn get_insensitive() -> TestResult {
+    run_test(
+        r#"[[name, age]; [a, 1] [b, 2]] | get NAmE | select 0 | get 0"#,
+        "a",
+    )
 }

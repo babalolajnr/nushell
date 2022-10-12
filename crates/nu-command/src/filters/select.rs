@@ -17,6 +17,11 @@ impl Command for Select {
     // FIXME: also add support for --skip
     fn signature(&self) -> Signature {
         Signature::build("select")
+            .switch(
+                "ignore-errors",
+                "when a column has empty cells, instead of erroring out, replace them with nothing",
+                Some('i'),
+            )
             .rest(
                 "rest",
                 SyntaxShape::CellPath,
@@ -29,6 +34,10 @@ impl Command for Select {
         "Down-select table to only these columns."
     }
 
+    fn search_terms(&self) -> Vec<&str> {
+        vec!["pick", "choose", "get"]
+    }
+
     fn run(
         &self,
         engine_state: &EngineState,
@@ -38,8 +47,9 @@ impl Command for Select {
     ) -> Result<nu_protocol::PipelineData, nu_protocol::ShellError> {
         let columns: Vec<CellPath> = call.rest(engine_state, stack, 0)?;
         let span = call.head;
+        let ignore_empty = call.has_flag("ignore-errors");
 
-        select(engine_state, span, columns, input)
+        select(engine_state, span, columns, input, ignore_empty)
     }
 
     fn examples(&self) -> Vec<Example> {
@@ -63,6 +73,7 @@ fn select(
     span: Span,
     columns: Vec<CellPath>,
     input: PipelineData,
+    ignore_empty: bool,
 ) -> Result<PipelineData, ShellError> {
     let mut rows = vec![];
 
@@ -117,6 +128,7 @@ fn select(
             ..,
         ) => {
             let mut output = vec![];
+            let mut columns_with_value = Vec::new();
 
             for input_val in input_vals {
                 if !columns.is_empty() {
@@ -124,10 +136,25 @@ fn select(
                     let mut vals = vec![];
                     for path in &columns {
                         //FIXME: improve implementation to not clone
-                        let fetcher = input_val.clone().follow_cell_path(&path.members)?;
+                        if ignore_empty {
+                            let fetcher = input_val.clone().follow_cell_path(&path.members, false);
 
-                        cols.push(path.into_string().replace('.', "_"));
-                        vals.push(fetcher);
+                            cols.push(path.into_string().replace('.', "_"));
+                            if let Ok(fetcher) = fetcher {
+                                vals.push(fetcher);
+                                if !columns_with_value.contains(&path) {
+                                    columns_with_value.push(path);
+                                }
+                            } else {
+                                vals.push(Value::nothing(span));
+                            }
+                        } else {
+                            let fetcher =
+                                input_val.clone().follow_cell_path(&path.members, false)?;
+
+                            cols.push(path.into_string().replace('.', "_"));
+                            vals.push(fetcher);
+                        }
                     }
 
                     output.push(Value::Record { cols, vals, span })
@@ -148,7 +175,7 @@ fn select(
                     let mut vals = vec![];
                     for path in &columns {
                         //FIXME: improve implementation to not clone
-                        match x.clone().follow_cell_path(&path.members) {
+                        match x.clone().follow_cell_path(&path.members, false) {
                             Ok(value) => {
                                 cols.push(path.into_string().replace('.', "_"));
                                 vals.push(value);
@@ -173,7 +200,7 @@ fn select(
 
                 for cell_path in columns {
                     // FIXME: remove clone
-                    let result = v.clone().follow_cell_path(&cell_path.members)?;
+                    let result = v.clone().follow_cell_path(&cell_path.members, false)?;
 
                     cols.push(cell_path.into_string().replace('.', "_"));
                     vals.push(result);
@@ -203,7 +230,7 @@ impl Iterator for NthIterator {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if !self.skip {
-                if let Some(row) = self.rows.get(0) {
+                if let Some(row) = self.rows.first() {
                     if self.current == *row {
                         self.rows.remove(0);
                         self.current += 1;
@@ -216,7 +243,7 @@ impl Iterator for NthIterator {
                 } else {
                     return None;
                 }
-            } else if let Some(row) = self.rows.get(0) {
+            } else if let Some(row) = self.rows.first() {
                 if self.current == *row {
                     self.rows.remove(0);
                     self.current += 1;

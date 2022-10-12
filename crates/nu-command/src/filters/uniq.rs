@@ -2,9 +2,7 @@ use std::collections::VecDeque;
 
 use nu_protocol::ast::Call;
 use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span, Value,
-};
+use nu_protocol::{Category, Example, IntoPipelineData, PipelineData, Signature, Span, Value};
 
 #[derive(Clone)]
 pub struct Uniq;
@@ -16,23 +14,31 @@ impl Command for Uniq {
 
     fn signature(&self) -> Signature {
         Signature::build("uniq")
-            .switch("count", "Count the unique rows", Some('c'))
+            .switch(
+                "count",
+                "Return a table containing the distinct input values together with their counts",
+                Some('c'),
+            )
             .switch(
                 "repeated",
-                "Count the rows that has more than one value",
+                "Return the input values that occur more than once",
                 Some('d'),
             )
             .switch(
                 "ignore-case",
-                "Ignore differences in case when comparing",
+                "Ignore differences in case when comparing input values",
                 Some('i'),
             )
-            .switch("unique", "Only return unique values", Some('u'))
+            .switch(
+                "unique",
+                "Return the input values that occur once only",
+                Some('u'),
+            )
             .category(Category::Filters)
     }
 
     fn usage(&self) -> &str {
-        "Return the unique rows."
+        "Return the distinct values in the input."
     }
 
     fn search_terms(&self) -> Vec<&str> {
@@ -52,7 +58,7 @@ impl Command for Uniq {
     fn examples(&self) -> Vec<Example> {
         vec![
             Example {
-                description: "Remove duplicate rows of a list/table",
+                description: "Return the distinct values of a list/table (remove duplicates so that each value occurs once only)",
                 example: "[2 3 3 4] | uniq",
                 result: Some(Value::List {
                     vals: vec![Value::test_int(2), Value::test_int(3), Value::test_int(4)],
@@ -60,17 +66,23 @@ impl Command for Uniq {
                 }),
             },
             Example {
-                description: "Only print duplicate lines, one for each group",
+                description: "Return the input values that occur more than once",
                 example: "[1 2 2] | uniq -d",
-                result: Some(Value::test_int(2)),
+                result: Some(Value::List {
+                    vals: vec![Value::test_int(2)],
+                    span: Span::test_data(),
+                }),
             },
             Example {
-                description: "Only print unique lines lines",
+                description: "Return the input values that occur once only",
                 example: "[1 2 2] | uniq -u",
-                result: Some(Value::test_int(1)),
+                result: Some(Value::List {
+                    vals: vec![Value::test_int(1)],
+                    span: Span::test_data(),
+                }),
             },
             Example {
-                description: "Ignore differences in case when comparing",
+                description: "Ignore differences in case when comparing input values",
                 example: "['hello' 'goodbye' 'Hello'] | uniq -i",
                 result: Some(Value::List {
                     vals: vec![Value::test_string("hello"), Value::test_string("goodbye")],
@@ -78,7 +90,7 @@ impl Command for Uniq {
                 }),
             },
             Example {
-                description: "Remove duplicate rows and show counts of a list/table",
+                description: "Return a table containing the distinct input values together with their counts",
                 example: "[1 2 2] | uniq -c",
                 result: Some(Value::List {
                     vals: vec![
@@ -182,21 +194,12 @@ fn uniq(
         }
     }
 
-    // keeps the original Nushell semantics
-    if values_vec_deque.len() == 1 {
-        if let Some(x) = values_vec_deque.pop_front() {
-            Ok(x.into_pipeline_data().set_metadata(metadata))
-        } else {
-            Err(ShellError::NushellFailed("No input given...".to_string()))
-        }
-    } else {
-        Ok(Value::List {
-            vals: values_vec_deque.into_iter().collect(),
-            span: head,
-        }
-        .into_pipeline_data()
-        .set_metadata(metadata))
+    Ok(Value::List {
+        vals: values_vec_deque.into_iter().collect(),
+        span: head,
     }
+    .into_pipeline_data()
+    .set_metadata(metadata))
 }
 
 #[cfg(test)]

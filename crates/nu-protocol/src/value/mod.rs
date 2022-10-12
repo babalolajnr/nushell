@@ -5,31 +5,31 @@ mod range;
 mod stream;
 mod unit;
 
+use crate::ast::Operator;
+use crate::ast::{CellPath, PathMember};
+use crate::ShellError;
+use crate::{did_you_mean, BlockId, Config, Span, Spanned, Type, VarId};
 use byte_unit::ByteUnit;
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, Duration, FixedOffset};
 use chrono_humanize::HumanTime;
+pub use custom_value::CustomValue;
+use fancy_regex::Regex;
 pub use from_value::FromValue;
 use indexmap::map::IndexMap;
-use num_format::{Locale, ToFormattedString};
+use nu_utils::get_system_locale;
+use num_format::ToFormattedString;
 pub use range::*;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    fmt::{Display, Formatter, Result as FmtResult},
+    iter,
+    path::PathBuf,
+    {cmp::Ordering, fmt::Debug},
+};
 pub use stream::*;
-use sys_locale::get_locale;
 pub use unit::*;
-
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::{cmp::Ordering, fmt::Debug};
-
-use crate::ast::{CellPath, PathMember};
-use crate::{did_you_mean, BlockId, Config, Span, Spanned, Type, VarId};
-
-use crate::ast::Operator;
-pub use custom_value::CustomValue;
-use std::iter;
-
-use crate::ShellError;
 
 /// Core structured values that pass through the pipeline in Nushell.
 // NOTE: Please do not reorder these enum cases without thinking through the
@@ -417,7 +417,7 @@ impl Value {
             Value::Error { .. } => Type::Error,
             Value::Binary { .. } => Type::Binary,
             Value::CellPath { .. } => Type::CellPath,
-            Value::CustomValue { .. } => Type::Custom,
+            Value::CustomValue { val, .. } => Type::Custom(val.typetag_name().into()),
         }
     }
 
@@ -605,7 +605,28 @@ impl Value {
     }
 
     /// Follow a given column path into the value: for example accessing select elements in a stream or list
-    pub fn follow_cell_path(self, cell_path: &[PathMember]) -> Result<Value, ShellError> {
+    pub fn follow_cell_path(
+        self,
+        cell_path: &[PathMember],
+        insensitive: bool,
+    ) -> Result<Value, ShellError> {
+        self.follow_cell_path_helper(cell_path, insensitive, true)
+    }
+
+    pub fn follow_cell_path_not_from_user_input(
+        self,
+        cell_path: &[PathMember],
+        insensitive: bool,
+    ) -> Result<Value, ShellError> {
+        self.follow_cell_path_helper(cell_path, insensitive, false)
+    }
+
+    fn follow_cell_path_helper(
+        self,
+        cell_path: &[PathMember],
+        insensitive: bool,
+        from_user_input: bool,
+    ) -> Result<Value, ShellError> {
         let mut current = self;
         for member in cell_path {
             // FIXME: this uses a few extra clones for simplicity, but there may be a way
@@ -661,16 +682,20 @@ impl Value {
                         let span = *span;
 
                         // Make reverse iterate to avoid duplicate column leads to first value, actuall last value is expected.
-                        if let Some(found) = cols
-                            .iter()
-                            .zip(vals.iter())
-                            .rev()
-                            .find(|x| x.0 == column_name)
-                        {
+                        if let Some(found) = cols.iter().zip(vals.iter()).rev().find(|x| {
+                            if insensitive {
+                                x.0.to_lowercase() == column_name.to_lowercase()
+                            } else {
+                                x.0 == column_name
+                            }
+                        }) {
                             current = found.1.clone();
-                        } else if let Some(suggestion) = did_you_mean(&cols, column_name) {
-                            return Err(ShellError::DidYouMean(suggestion, *origin_span));
                         } else {
+                            if from_user_input {
+                                if let Some(suggestion) = did_you_mean(&cols, column_name) {
+                                    return Err(ShellError::DidYouMean(suggestion, *origin_span));
+                                }
+                            }
                             return Err(ShellError::CantFindColumn(*origin_span, span));
                         }
                     }
@@ -679,10 +704,13 @@ impl Value {
                         let mut hasvalue = false;
                         let mut temp: Result<Value, ShellError> = Err(ShellError::NotFound(*span));
                         for val in vals {
-                            temp = val.clone().follow_cell_path(&[PathMember::String {
-                                val: column_name.clone(),
-                                span: *origin_span,
-                            }]);
+                            temp = val.clone().follow_cell_path(
+                                &[PathMember::String {
+                                    val: column_name.clone(),
+                                    span: *origin_span,
+                                }],
+                                insensitive,
+                            );
                             if let Ok(result) = temp.clone() {
                                 hasvalue = true;
                                 output.push(result);
@@ -723,7 +751,7 @@ impl Value {
     ) -> Result<(), ShellError> {
         let orig = self.clone();
 
-        let new_val = callback(&orig.follow_cell_path(cell_path)?);
+        let new_val = callback(&orig.follow_cell_path(cell_path, false)?);
 
         match new_val {
             Value::Error { error } => Err(error),
@@ -834,7 +862,7 @@ impl Value {
     ) -> Result<(), ShellError> {
         let orig = self.clone();
 
-        let new_val = callback(&orig.follow_cell_path(cell_path)?);
+        let new_val = callback(&orig.follow_cell_path(cell_path, false)?);
 
         match new_val {
             Value::Error { error } => Err(error),
@@ -916,6 +944,141 @@ impl Value {
             }
         }
         Ok(())
+    }
+
+    pub fn remove_data_at_cell_path(&mut self, cell_path: &[PathMember]) -> Result<(), ShellError> {
+        match cell_path.len() {
+            0 => Ok(()),
+            1 => {
+                let path_member = cell_path.first().expect("there is a first");
+                match path_member {
+                    PathMember::String {
+                        val: col_name,
+                        span,
+                    } => match self {
+                        Value::List { vals, .. } => {
+                            for val in vals.iter_mut() {
+                                match val {
+                                    Value::Record {
+                                        cols,
+                                        vals,
+                                        span: v_span,
+                                    } => {
+                                        let mut found = false;
+                                        for (i, col) in cols.clone().iter().enumerate() {
+                                            if col == col_name {
+                                                cols.remove(i);
+                                                vals.remove(i);
+                                                found = true;
+                                            }
+                                        }
+                                        if !found {
+                                            return Err(ShellError::CantFindColumn(*span, *v_span));
+                                        }
+                                    }
+                                    v => return Err(ShellError::CantFindColumn(*span, v.span()?)),
+                                }
+                            }
+                            Ok(())
+                        }
+                        Value::Record {
+                            cols,
+                            vals,
+                            span: v_span,
+                        } => {
+                            let mut found = false;
+                            for (i, col) in cols.clone().iter().enumerate() {
+                                if col == col_name {
+                                    cols.remove(i);
+                                    vals.remove(i);
+                                    found = true;
+                                }
+                            }
+                            if !found {
+                                return Err(ShellError::CantFindColumn(*span, *v_span));
+                            }
+                            Ok(())
+                        }
+                        v => Err(ShellError::CantFindColumn(*span, v.span()?)),
+                    },
+                    PathMember::Int { val: row_num, span } => match self {
+                        Value::List { vals, .. } => {
+                            if vals.get_mut(*row_num).is_some() {
+                                vals.remove(*row_num);
+                                Ok(())
+                            } else {
+                                Err(ShellError::AccessBeyondEnd(vals.len(), *span))
+                            }
+                        }
+                        v => Err(ShellError::NotAList(*span, v.span()?)),
+                    },
+                }
+            }
+            _ => {
+                let path_member = cell_path.first().expect("there is a first");
+                match path_member {
+                    PathMember::String {
+                        val: col_name,
+                        span,
+                    } => match self {
+                        Value::List { vals, .. } => {
+                            for val in vals.iter_mut() {
+                                match val {
+                                    Value::Record {
+                                        cols,
+                                        vals,
+                                        span: v_span,
+                                    } => {
+                                        let mut found = false;
+                                        for col in cols.iter().zip(vals.iter_mut()) {
+                                            if col.0 == col_name {
+                                                found = true;
+                                                col.1.remove_data_at_cell_path(&cell_path[1..])?
+                                            }
+                                        }
+                                        if !found {
+                                            return Err(ShellError::CantFindColumn(*span, *v_span));
+                                        }
+                                    }
+                                    v => return Err(ShellError::CantFindColumn(*span, v.span()?)),
+                                }
+                            }
+                            Ok(())
+                        }
+                        Value::Record {
+                            cols,
+                            vals,
+                            span: v_span,
+                        } => {
+                            let mut found = false;
+
+                            for col in cols.iter().zip(vals.iter_mut()) {
+                                if col.0 == col_name {
+                                    found = true;
+
+                                    col.1.remove_data_at_cell_path(&cell_path[1..])?
+                                }
+                            }
+                            if !found {
+                                return Err(ShellError::CantFindColumn(*span, *v_span));
+                            }
+                            Ok(())
+                        }
+                        v => Err(ShellError::CantFindColumn(*span, v.span()?)),
+                    },
+                    PathMember::Int { val: row_num, span } => match self {
+                        Value::List { vals, .. } => {
+                            if let Some(v) = vals.get_mut(*row_num) {
+                                v.remove_data_at_cell_path(&cell_path[1..])
+                            } else {
+                                Err(ShellError::AccessBeyondEnd(vals.len(), *span))
+                            }
+                        }
+                        v => Err(ShellError::NotAList(*span, v.span()?)),
+                    },
+                }
+            }
+        }
     }
 
     pub fn insert_data_at_cell_path(
@@ -1013,6 +1176,10 @@ impl Value {
         matches!(self, Value::Bool { val: true, .. })
     }
 
+    pub fn is_false(&self) -> bool {
+        matches!(self, Value::Bool { val: false, .. })
+    }
+
     pub fn columns(&self) -> Vec<String> {
         match self {
             Value::Record { cols, .. } => cols.clone(),
@@ -1022,6 +1189,13 @@ impl Value {
 
     pub fn string(val: impl Into<String>, span: Span) -> Value {
         Value::String {
+            val: val.into(),
+            span,
+        }
+    }
+
+    pub fn binary(val: impl Into<Vec<u8>>, span: Span) -> Value {
+        Value::Binary {
             val: val.into(),
             span,
         }
@@ -1506,6 +1680,7 @@ impl Value {
             }),
         }
     }
+
     pub fn sub(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         match (self, rhs) {
             (Value::Int { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
@@ -1584,6 +1759,7 @@ impl Value {
             }),
         }
     }
+
     pub fn mul(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         match (self, rhs) {
             (Value::Int { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
@@ -1620,6 +1796,18 @@ impl Value {
                     span,
                 })
             }
+            (Value::Float { val: lhs, .. }, Value::Filesize { val: rhs, .. }) => {
+                Ok(Value::Filesize {
+                    val: (*lhs * *rhs as f64) as i64,
+                    span,
+                })
+            }
+            (Value::Filesize { val: lhs, .. }, Value::Float { val: rhs, .. }) => {
+                Ok(Value::Filesize {
+                    val: (*lhs as f64 * *rhs) as i64,
+                    span,
+                })
+            }
             (Value::Int { val: lhs, .. }, Value::Duration { val: rhs, .. }) => {
                 Ok(Value::Duration {
                     val: *lhs * *rhs,
@@ -1629,6 +1817,18 @@ impl Value {
             (Value::Duration { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
                 Ok(Value::Duration {
                     val: *lhs * *rhs,
+                    span,
+                })
+            }
+            (Value::Duration { val: lhs, .. }, Value::Float { val: rhs, .. }) => {
+                Ok(Value::Duration {
+                    val: (*lhs as f64 * *rhs) as i64,
+                    span,
+                })
+            }
+            (Value::Float { val: lhs, .. }, Value::Duration { val: rhs, .. }) => {
+                Ok(Value::Duration {
+                    val: (*lhs * *rhs as f64) as i64,
                     span,
                 })
             }
@@ -1645,6 +1845,7 @@ impl Value {
             }),
         }
     }
+
     pub fn div(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         match (self, rhs) {
             (Value::Int { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
@@ -1711,6 +1912,26 @@ impl Value {
                     Err(ShellError::DivisionByZero(op))
                 }
             }
+            (Value::Filesize { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
+                if *rhs != 0 {
+                    Ok(Value::Filesize {
+                        val: ((*lhs as f64) / (*rhs as f64)) as i64,
+                        span,
+                    })
+                } else {
+                    Err(ShellError::DivisionByZero(op))
+                }
+            }
+            (Value::Filesize { val: lhs, .. }, Value::Float { val: rhs, .. }) => {
+                if *rhs != 0.0 {
+                    Ok(Value::Filesize {
+                        val: (*lhs as f64 / rhs) as i64,
+                        span,
+                    })
+                } else {
+                    Err(ShellError::DivisionByZero(op))
+                }
+            }
             (Value::Duration { val: lhs, .. }, Value::Duration { val: rhs, .. }) => {
                 if *rhs != 0 {
                     if lhs % rhs == 0 {
@@ -1728,20 +1949,20 @@ impl Value {
                     Err(ShellError::DivisionByZero(op))
                 }
             }
-            (Value::Filesize { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
+            (Value::Duration { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
                 if *rhs != 0 {
-                    Ok(Value::Filesize {
-                        val: lhs / rhs,
+                    Ok(Value::Duration {
+                        val: ((*lhs as f64) / (*rhs as f64)) as i64,
                         span,
                     })
                 } else {
                     Err(ShellError::DivisionByZero(op))
                 }
             }
-            (Value::Duration { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
-                if *rhs != 0 {
+            (Value::Duration { val: lhs, .. }, Value::Float { val: rhs, .. }) => {
+                if *rhs != 0.0 {
                     Ok(Value::Duration {
-                        val: lhs / rhs,
+                        val: ((*lhs as f64) / rhs) as i64,
                         span,
                     })
                 } else {
@@ -1761,6 +1982,153 @@ impl Value {
             }),
         }
     }
+
+    pub fn floor_div(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
+        match (self, rhs) {
+            (Value::Int { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
+                if *rhs != 0 {
+                    Ok(Value::Int {
+                        val: (*lhs as f64 / *rhs as f64)
+                            .max(std::i64::MIN as f64)
+                            .min(std::i64::MAX as f64)
+                            .floor() as i64,
+                        span,
+                    })
+                } else {
+                    Err(ShellError::DivisionByZero(op))
+                }
+            }
+            (Value::Int { val: lhs, .. }, Value::Float { val: rhs, .. }) => {
+                if *rhs != 0.0 {
+                    Ok(Value::Int {
+                        val: (*lhs as f64 / *rhs)
+                            .max(std::i64::MIN as f64)
+                            .min(std::i64::MAX as f64)
+                            .floor() as i64,
+                        span,
+                    })
+                } else {
+                    Err(ShellError::DivisionByZero(op))
+                }
+            }
+            (Value::Float { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
+                if *rhs != 0 {
+                    Ok(Value::Int {
+                        val: (*lhs / *rhs as f64)
+                            .max(std::i64::MIN as f64)
+                            .min(std::i64::MAX as f64)
+                            .floor() as i64,
+                        span,
+                    })
+                } else {
+                    Err(ShellError::DivisionByZero(op))
+                }
+            }
+            (Value::Float { val: lhs, .. }, Value::Float { val: rhs, .. }) => {
+                if *rhs != 0.0 {
+                    Ok(Value::Int {
+                        val: (lhs / rhs)
+                            .max(std::i64::MIN as f64)
+                            .min(std::i64::MAX as f64)
+                            .floor() as i64,
+                        span,
+                    })
+                } else {
+                    Err(ShellError::DivisionByZero(op))
+                }
+            }
+            (Value::Filesize { val: lhs, .. }, Value::Filesize { val: rhs, .. }) => {
+                if *rhs != 0 {
+                    Ok(Value::Int {
+                        val: (*lhs as f64 / *rhs as f64)
+                            .max(std::i64::MIN as f64)
+                            .min(std::i64::MAX as f64)
+                            .floor() as i64,
+                        span,
+                    })
+                } else {
+                    Err(ShellError::DivisionByZero(op))
+                }
+            }
+            (Value::Filesize { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
+                if *rhs != 0 {
+                    Ok(Value::Filesize {
+                        val: ((*lhs as f64) / (*rhs as f64))
+                            .max(std::i64::MIN as f64)
+                            .min(std::i64::MAX as f64)
+                            .floor() as i64,
+                        span,
+                    })
+                } else {
+                    Err(ShellError::DivisionByZero(op))
+                }
+            }
+            (Value::Filesize { val: lhs, .. }, Value::Float { val: rhs, .. }) => {
+                if *rhs != 0.0 {
+                    Ok(Value::Filesize {
+                        val: (*lhs as f64 / *rhs)
+                            .max(std::i64::MIN as f64)
+                            .min(std::i64::MAX as f64)
+                            .floor() as i64,
+                        span,
+                    })
+                } else {
+                    Err(ShellError::DivisionByZero(op))
+                }
+            }
+            (Value::Duration { val: lhs, .. }, Value::Duration { val: rhs, .. }) => {
+                if *rhs != 0 {
+                    Ok(Value::Int {
+                        val: (*lhs as f64 / *rhs as f64)
+                            .max(std::i64::MIN as f64)
+                            .min(std::i64::MAX as f64)
+                            .floor() as i64,
+                        span,
+                    })
+                } else {
+                    Err(ShellError::DivisionByZero(op))
+                }
+            }
+            (Value::Duration { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
+                if *rhs != 0 {
+                    Ok(Value::Duration {
+                        val: (*lhs as f64 / *rhs as f64)
+                            .max(std::i64::MIN as f64)
+                            .min(std::i64::MAX as f64)
+                            .floor() as i64,
+                        span,
+                    })
+                } else {
+                    Err(ShellError::DivisionByZero(op))
+                }
+            }
+            (Value::Duration { val: lhs, .. }, Value::Float { val: rhs, .. }) => {
+                if *rhs != 0.0 {
+                    Ok(Value::Duration {
+                        val: (*lhs as f64 / *rhs)
+                            .max(std::i64::MIN as f64)
+                            .min(std::i64::MAX as f64)
+                            .floor() as i64,
+                        span,
+                    })
+                } else {
+                    Err(ShellError::DivisionByZero(op))
+                }
+            }
+            (Value::CustomValue { val: lhs, span }, rhs) => {
+                lhs.operation(*span, Operator::Divide, op, rhs)
+            }
+
+            _ => Err(ShellError::OperatorMismatch {
+                op_span: op,
+                lhs_ty: self.get_type(),
+                lhs_span: self.span()?,
+                rhs_ty: rhs.get_type(),
+                rhs_span: rhs.span()?,
+            }),
+        }
+    }
+
     pub fn lt(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         if let (Value::CustomValue { val: lhs, span }, rhs) = (self, rhs) {
             return lhs.operation(*span, Operator::LessThan, op, rhs);
@@ -1787,6 +2155,7 @@ impl Value {
             }),
         }
     }
+
     pub fn lte(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         if let (Value::CustomValue { val: lhs, span }, rhs) = (self, rhs) {
             return lhs.operation(*span, Operator::LessThanOrEqual, op, rhs);
@@ -1813,6 +2182,7 @@ impl Value {
             }),
         }
     }
+
     pub fn gt(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         if let (Value::CustomValue { val: lhs, span }, rhs) = (self, rhs) {
             return lhs.operation(*span, Operator::GreaterThan, op, rhs);
@@ -1839,6 +2209,7 @@ impl Value {
             }),
         }
     }
+
     pub fn gte(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         if let (Value::CustomValue { val: lhs, span }, rhs) = (self, rhs) {
             return lhs.operation(*span, Operator::GreaterThanOrEqual, op, rhs);
@@ -1865,6 +2236,7 @@ impl Value {
             }),
         }
     }
+
     pub fn eq(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         if let (Value::CustomValue { val: lhs, span }, rhs) = (self, rhs) {
             return lhs.operation(*span, Operator::Equal, op, rhs);
@@ -1889,6 +2261,7 @@ impl Value {
             },
         }
     }
+
     pub fn ne(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         if let (Value::CustomValue { val: lhs, span }, rhs) = (self, rhs) {
             return lhs.operation(*span, Operator::NotEqual, op, rhs);
@@ -2050,7 +2423,11 @@ impl Value {
                     .map_err(|e| ShellError::UnsupportedInput(format!("{e}"), *rhs_span))?;
                 let is_match = regex.is_match(lhs);
                 Ok(Value::Bool {
-                    val: if invert { !is_match } else { is_match },
+                    val: if invert {
+                        !is_match.unwrap_or(false)
+                    } else {
+                        is_match.unwrap_or(true)
+                    },
                     span,
                 })
             }
@@ -2101,6 +2478,101 @@ impl Value {
             }),
             (Value::CustomValue { val: lhs, span }, rhs) => {
                 lhs.operation(*span, Operator::EndsWith, op, rhs)
+            }
+            _ => Err(ShellError::OperatorMismatch {
+                op_span: op,
+                lhs_ty: self.get_type(),
+                lhs_span: self.span()?,
+                rhs_ty: rhs.get_type(),
+                rhs_span: rhs.span()?,
+            }),
+        }
+    }
+
+    pub fn bit_shl(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
+        match (self, rhs) {
+            (Value::Int { val: lhs, .. }, Value::Int { val: rhs, .. }) => Ok(Value::Int {
+                span,
+                val: *lhs << rhs,
+            }),
+            (Value::CustomValue { val: lhs, span }, rhs) => {
+                lhs.operation(*span, Operator::ShiftLeft, op, rhs)
+            }
+            _ => Err(ShellError::OperatorMismatch {
+                op_span: op,
+                lhs_ty: self.get_type(),
+                lhs_span: self.span()?,
+                rhs_ty: rhs.get_type(),
+                rhs_span: rhs.span()?,
+            }),
+        }
+    }
+
+    pub fn bit_shr(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
+        match (self, rhs) {
+            (Value::Int { val: lhs, .. }, Value::Int { val: rhs, .. }) => Ok(Value::Int {
+                span,
+                val: *lhs >> rhs,
+            }),
+            (Value::CustomValue { val: lhs, span }, rhs) => {
+                lhs.operation(*span, Operator::ShiftRight, op, rhs)
+            }
+            _ => Err(ShellError::OperatorMismatch {
+                op_span: op,
+                lhs_ty: self.get_type(),
+                lhs_span: self.span()?,
+                rhs_ty: rhs.get_type(),
+                rhs_span: rhs.span()?,
+            }),
+        }
+    }
+
+    pub fn bit_or(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
+        match (self, rhs) {
+            (Value::Int { val: lhs, .. }, Value::Int { val: rhs, .. }) => Ok(Value::Int {
+                span,
+                val: *lhs | rhs,
+            }),
+            (Value::CustomValue { val: lhs, span }, rhs) => {
+                lhs.operation(*span, Operator::BitOr, op, rhs)
+            }
+            _ => Err(ShellError::OperatorMismatch {
+                op_span: op,
+                lhs_ty: self.get_type(),
+                lhs_span: self.span()?,
+                rhs_ty: rhs.get_type(),
+                rhs_span: rhs.span()?,
+            }),
+        }
+    }
+
+    pub fn bit_xor(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
+        match (self, rhs) {
+            (Value::Int { val: lhs, .. }, Value::Int { val: rhs, .. }) => Ok(Value::Int {
+                span,
+                val: *lhs ^ rhs,
+            }),
+            (Value::CustomValue { val: lhs, span }, rhs) => {
+                lhs.operation(*span, Operator::BitXor, op, rhs)
+            }
+            _ => Err(ShellError::OperatorMismatch {
+                op_span: op,
+                lhs_ty: self.get_type(),
+                lhs_span: self.span()?,
+                rhs_ty: rhs.get_type(),
+                rhs_span: rhs.span()?,
+            }),
+        }
+    }
+
+    pub fn bit_and(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
+        match (self, rhs) {
+            (Value::Int { val: lhs, .. }, Value::Int { val: rhs, .. }) => Ok(Value::Int {
+                span,
+                val: *lhs & rhs,
+            }),
+            (Value::CustomValue { val: lhs, span }, rhs) => {
+                lhs.operation(*span, Operator::BitAnd, op, rhs)
             }
             _ => Err(ShellError::OperatorMismatch {
                 op_span: op,
@@ -2302,58 +2774,214 @@ impl From<Spanned<IndexMap<String, Value>>> for Value {
     }
 }
 
-/// Format a duration in nanoseconds into a string
+/// Is the given year a leap year?
+#[allow(clippy::nonminimal_bool)]
+pub fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0) && (year % 100 != 0 || (year % 100 == 0 && year % 400 == 0))
+}
+
+#[derive(Clone, Copy)]
+enum TimePeriod {
+    Nanos(i64),
+    Micros(i64),
+    Millis(i64),
+    Seconds(i64),
+    Minutes(i64),
+    Hours(i64),
+    Days(i64),
+    Weeks(i64),
+    Months(i64),
+    Years(i64),
+}
+
+impl TimePeriod {
+    fn to_text(self) -> Cow<'static, str> {
+        match self {
+            Self::Nanos(n) => format!("{}ns", n).into(),
+            Self::Micros(n) => format!("{}µs", n).into(),
+            Self::Millis(n) => format!("{}ms", n).into(),
+            Self::Seconds(n) => format!("{}sec", n).into(),
+            Self::Minutes(n) => format!("{}min", n).into(),
+            Self::Hours(n) => format!("{}hr", n).into(),
+            Self::Days(n) => format!("{}day", n).into(),
+            Self::Weeks(n) => format!("{}wk", n).into(),
+            Self::Months(n) => format!("{}month", n).into(),
+            Self::Years(n) => format!("{}yr", n).into(),
+        }
+    }
+}
+
+impl Display for TimePeriod {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        write!(f, "{}", self.to_text())
+    }
+}
+
 pub fn format_duration(duration: i64) -> String {
+    // Attribution: most of this is taken from chrono-humanize-rs. Thanks!
+    // https://gitlab.com/imp/chrono-humanize-rs/-/blob/master/src/humantime.rs
+    const DAYS_IN_YEAR: i64 = 365;
+    const DAYS_IN_MONTH: i64 = 30;
+
     let (sign, duration) = if duration >= 0 {
         (1, duration)
     } else {
         (-1, -duration)
     };
-    let (micros, nanos): (i64, i64) = (duration / 1000, duration % 1000);
-    let (millis, micros): (i64, i64) = (micros / 1000, micros % 1000);
-    let (secs, millis): (i64, i64) = (millis / 1000, millis % 1000);
-    let (mins, secs): (i64, i64) = (secs / 60, secs % 60);
-    let (hours, mins): (i64, i64) = (mins / 60, mins % 60);
-    let (days, hours): (i64, i64) = (hours / 24, hours % 24);
 
-    let mut output_prep = vec![];
+    let dur = Duration::nanoseconds(duration);
 
-    if days != 0 {
-        output_prep.push(format!("{}day", days));
+    /// Split this a duration into number of whole years and the remainder
+    fn split_years(duration: Duration) -> (Option<i64>, Duration) {
+        let years = duration.num_days() / DAYS_IN_YEAR;
+        let remainder = duration - Duration::days(years * DAYS_IN_YEAR);
+        normalize_split(years, remainder)
     }
 
-    if hours != 0 {
-        output_prep.push(format!("{}hr", hours));
+    /// Split this a duration into number of whole months and the remainder
+    fn split_months(duration: Duration) -> (Option<i64>, Duration) {
+        let months = duration.num_days() / DAYS_IN_MONTH;
+        let remainder = duration - Duration::days(months * DAYS_IN_MONTH);
+        normalize_split(months, remainder)
     }
 
-    if mins != 0 {
-        output_prep.push(format!("{}min", mins));
-    }
-    // output 0sec for zero duration
-    if duration == 0 || secs != 0 {
-        output_prep.push(format!("{}sec", secs));
-    }
-
-    if millis != 0 {
-        output_prep.push(format!("{}ms", millis));
+    /// Split this a duration into number of whole weeks and the remainder
+    fn split_weeks(duration: Duration) -> (Option<i64>, Duration) {
+        let weeks = duration.num_weeks();
+        let remainder = duration - Duration::weeks(weeks);
+        normalize_split(weeks, remainder)
     }
 
-    if micros != 0 {
-        output_prep.push(format!("{}us", micros));
+    /// Split this a duration into number of whole days and the remainder
+    fn split_days(duration: Duration) -> (Option<i64>, Duration) {
+        let days = duration.num_days();
+        let remainder = duration - Duration::days(days);
+        normalize_split(days, remainder)
     }
 
-    if nanos != 0 {
-        output_prep.push(format!("{}ns", nanos));
+    /// Split this a duration into number of whole hours and the remainder
+    fn split_hours(duration: Duration) -> (Option<i64>, Duration) {
+        let hours = duration.num_hours();
+        let remainder = duration - Duration::hours(hours);
+        normalize_split(hours, remainder)
     }
+
+    /// Split this a duration into number of whole minutes and the remainder
+    fn split_minutes(duration: Duration) -> (Option<i64>, Duration) {
+        let minutes = duration.num_minutes();
+        let remainder = duration - Duration::minutes(minutes);
+        normalize_split(minutes, remainder)
+    }
+
+    /// Split this a duration into number of whole seconds and the remainder
+    fn split_seconds(duration: Duration) -> (Option<i64>, Duration) {
+        let seconds = duration.num_seconds();
+        let remainder = duration - Duration::seconds(seconds);
+        normalize_split(seconds, remainder)
+    }
+
+    /// Split this a duration into number of whole milliseconds and the remainder
+    fn split_milliseconds(duration: Duration) -> (Option<i64>, Duration) {
+        let millis = duration.num_milliseconds();
+        let remainder = duration - Duration::milliseconds(millis);
+        normalize_split(millis, remainder)
+    }
+
+    /// Split this a duration into number of whole seconds and the remainder
+    fn split_microseconds(duration: Duration) -> (Option<i64>, Duration) {
+        let micros = duration.num_microseconds().unwrap_or_default();
+        let remainder = duration - Duration::microseconds(micros);
+        normalize_split(micros, remainder)
+    }
+
+    /// Split this a duration into number of whole seconds and the remainder
+    fn split_nanoseconds(duration: Duration) -> (Option<i64>, Duration) {
+        let nanos = duration.num_nanoseconds().unwrap_or_default();
+        let remainder = duration - Duration::nanoseconds(nanos);
+        normalize_split(nanos, remainder)
+    }
+
+    fn normalize_split(
+        wholes: impl Into<Option<i64>>,
+        remainder: Duration,
+    ) -> (Option<i64>, Duration) {
+        let wholes = wholes.into().map(i64::abs).filter(|x| *x > 0);
+        (wholes, remainder)
+    }
+
+    let mut periods = vec![];
+    let (years, remainder) = split_years(dur);
+    if let Some(years) = years {
+        periods.push(TimePeriod::Years(years));
+    }
+
+    let (months, remainder) = split_months(remainder);
+    if let Some(months) = months {
+        periods.push(TimePeriod::Months(months));
+    }
+
+    let (weeks, remainder) = split_weeks(remainder);
+    if let Some(weeks) = weeks {
+        periods.push(TimePeriod::Weeks(weeks));
+    }
+
+    let (days, remainder) = split_days(remainder);
+    if let Some(days) = days {
+        periods.push(TimePeriod::Days(days));
+    }
+
+    let (hours, remainder) = split_hours(remainder);
+    if let Some(hours) = hours {
+        periods.push(TimePeriod::Hours(hours));
+    }
+
+    let (minutes, remainder) = split_minutes(remainder);
+    if let Some(minutes) = minutes {
+        periods.push(TimePeriod::Minutes(minutes));
+    }
+
+    let (seconds, remainder) = split_seconds(remainder);
+    if let Some(seconds) = seconds {
+        periods.push(TimePeriod::Seconds(seconds));
+    }
+
+    let (millis, remainder) = split_milliseconds(remainder);
+    if let Some(millis) = millis {
+        periods.push(TimePeriod::Millis(millis));
+    }
+
+    let (micros, remainder) = split_microseconds(remainder);
+    if let Some(micros) = micros {
+        periods.push(TimePeriod::Micros(micros));
+    }
+
+    let (nanos, _remainder) = split_nanoseconds(remainder);
+    if let Some(nanos) = nanos {
+        periods.push(TimePeriod::Nanos(nanos));
+    }
+
+    if periods.is_empty() {
+        periods.push(TimePeriod::Seconds(0));
+    }
+
+    // let last = periods.pop().map(|last| last.to_text().to_string());
+    let text = periods
+        .into_iter()
+        .map(|p| p.to_text().to_string())
+        .collect::<Vec<String>>();
+
+    // if let Some(last) = last {
+    //     text.push(format!("and {}", last));
+    // }
 
     format!(
         "{}{}",
         if sign == -1 { "-" } else { "" },
-        output_prep.join(" ")
+        text.join(" ").trim()
     )
 }
 
-fn format_filesize_from_conf(num_bytes: i64, config: &Config) -> String {
+pub fn format_filesize_from_conf(num_bytes: i64, config: &Config) -> String {
     // We need to take into account config.filesize_metric so, if someone asks for KB
     // filesize_metric is true, return KiB
     format_filesize(
@@ -2377,25 +3005,7 @@ pub fn format_filesize(num_bytes: i64, format_value: &str, filesize_metric: bool
 
     match adj_byte.get_unit() {
         byte_unit::ByteUnit::B => {
-            let locale_string = get_locale().unwrap_or_else(|| String::from("en-US"));
-            // Since get_locale() and Locale::from_name() don't always return the same items
-            // we need to try and parse it to match. For instance, a valid locale is de_DE
-            // however Locale::from_name() wants only de so we split and parse it out.
-            let locale_string = locale_string.replace('_', "-"); // en_AU -> en-AU
-            let locale = match Locale::from_name(&locale_string) {
-                Ok(loc) => loc,
-                _ => {
-                    let all = num_format::Locale::available_names();
-                    let locale_prefix = &locale_string.split('-').collect::<Vec<&str>>();
-                    if all.contains(&locale_prefix[0]) {
-                        // eprintln!("Found alternate: {}", &locale_prefix[0]);
-                        Locale::from_name(locale_prefix[0]).unwrap_or(Locale::en)
-                    } else {
-                        // eprintln!("Unable to find matching locale. Defaulting to en-US");
-                        Locale::en
-                    }
-                }
-            };
+            let locale = get_system_locale();
             let locale_byte = adj_byte.get_value() as u64;
             let locale_byte_string = locale_byte.to_formatted_string(&locale);
 

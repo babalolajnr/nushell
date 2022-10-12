@@ -5,7 +5,8 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, SyntaxShape, Value,
+    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span, SyntaxShape,
+    Type, Value,
 };
 use sqlparser::ast::{SetExpr, Statement};
 
@@ -14,7 +15,7 @@ pub struct GroupByDb;
 
 impl Command for GroupByDb {
     fn name(&self) -> &str {
-        "db group-by"
+        "group-by"
     }
 
     fn usage(&self) -> &str {
@@ -28,6 +29,8 @@ impl Command for GroupByDb {
                 SyntaxShape::Any,
                 "Select expression(s) on the table",
             )
+            .input_type(Type::Custom("database".into()))
+            .output_type(Type::Custom("database".into()))
             .category(Category::Custom("database".into()))
     }
 
@@ -36,15 +39,52 @@ impl Command for GroupByDb {
     }
 
     fn examples(&self) -> Vec<Example> {
-        vec![Example {
-            description: "orders query by a column",
-            example: r#"db open db.mysql 
-    | db from table_a 
-    | db select a 
-    | db group-by a 
-    | db describe"#,
-            result: None,
-        }]
+        vec![
+            Example {
+                description: "groups by column a and calculates the max",
+                example: r#"open db.sqlite
+    | from table table_a
+    | select (fn max a)
+    | group-by a
+    | describe"#,
+                result: Some(Value::Record {
+                    cols: vec!["connection".into(), "query".into()],
+                    vals: vec![
+                        Value::String {
+                            val: "db.sqlite".into(),
+                            span: Span::test_data(),
+                        },
+                        Value::String {
+                            val: "SELECT max(a) FROM table_a GROUP BY a".into(),
+                            span: Span::test_data(),
+                        },
+                    ],
+                    span: Span::test_data(),
+                }),
+            },
+            Example {
+                description: "groups by column column a and counts records",
+                example: r#"open db.sqlite
+    | from table table_a
+    | select (fn count *)
+    | group-by a
+    | describe"#,
+                result: Some(Value::Record {
+                    cols: vec!["connection".into(), "query".into()],
+                    vals: vec![
+                        Value::String {
+                            val: "db.sqlite".into(),
+                            span: Span::test_data(),
+                        },
+                        Value::String {
+                            val: "SELECT count(*) FROM table_a GROUP BY a".into(),
+                            span: Span::test_data(),
+                        },
+                    ],
+                    span: Span::test_data(),
+                }),
+            },
+        ]
     }
 
     fn run(
@@ -64,7 +104,7 @@ impl Command for GroupByDb {
         let mut db = SQLiteDatabase::try_from_pipeline(input, call.head)?;
         match db.statement.as_mut() {
             Some(statement) => match statement {
-                Statement::Query(ref mut query) => match &mut query.body {
+                Statement::Query(ref mut query) => match &mut *query.body {
                     SetExpr::Select(ref mut select) => select.group_by = expressions,
                     s => {
                         return Err(ShellError::GenericError(
@@ -98,5 +138,26 @@ impl Command for GroupByDb {
         };
 
         Ok(db.into_value(call.head).into_pipeline_data())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::super::super::expressions::{FieldExpr, FunctionExpr, OrExpr};
+    use super::super::{FromDb, ProjectionDb, WhereDb};
+    use super::*;
+    use crate::database::test_database::test_database;
+
+    #[test]
+    fn test_examples() {
+        test_database(vec![
+            Box::new(GroupByDb {}),
+            Box::new(ProjectionDb {}),
+            Box::new(FunctionExpr {}),
+            Box::new(FromDb {}),
+            Box::new(WhereDb {}),
+            Box::new(FieldExpr {}),
+            Box::new(OrExpr {}),
+        ])
     }
 }

@@ -3,7 +3,7 @@ use super::super::values::{NuDataFrame, NuLazyFrame};
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature,
+    Category, Example, PipelineData, ShellError, Signature, Type, Value,
 };
 
 #[derive(Clone)]
@@ -11,7 +11,7 @@ pub struct ToLazyFrame;
 
 impl Command for ToLazyFrame {
     fn name(&self) -> &str {
-        "dfr to-lazy"
+        "into lazy"
     }
 
     fn usage(&self) -> &str {
@@ -19,13 +19,16 @@ impl Command for ToLazyFrame {
     }
 
     fn signature(&self) -> Signature {
-        Signature::build(self.name()).category(Category::Custom("lazyframe".into()))
+        Signature::build(self.name())
+            .input_type(Type::Any)
+            .output_type(Type::Custom("dataframe".into()))
+            .category(Category::Custom("lazyframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Takes a dictionary and creates a lazy dataframe",
-            example: "[[a b];[1 2] [3 4]] | dfr to-df | dfl to-lazy",
+            example: "[[a b];[1 2] [3 4]] | into lazy",
             result: None,
         }]
     }
@@ -39,7 +42,11 @@ impl Command for ToLazyFrame {
     ) -> Result<PipelineData, ShellError> {
         let df = NuDataFrame::try_from_iter(input.into_iter())?;
         let lazy = NuLazyFrame::from_dataframe(df);
+        let value = Value::CustomValue {
+            val: Box::new(lazy),
+            span: call.head,
+        };
 
-        Ok(PipelineData::Value(lazy.into_value(call.head), None))
+        Ok(PipelineData::Value(value, None))
     }
 }

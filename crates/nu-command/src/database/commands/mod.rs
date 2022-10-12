@@ -1,53 +1,48 @@
 // Conversions between value and sqlparser objects
 pub mod conversions;
 
-mod alias;
 mod and;
-mod col;
+mod as_;
 mod collect;
-mod command;
 mod describe;
-mod from;
-mod function;
+mod from_table;
 mod group_by;
+mod into_db;
+mod into_sqlite;
 mod join;
 mod limit;
-mod open;
+mod open_db;
 mod or;
 mod order_by;
-mod over;
-mod query;
+mod query_db;
 mod schema;
 mod select;
 mod where_;
 
 // Temporal module to create Query objects
-mod testing;
-use testing::TestingDb;
+mod testing_db;
+use testing_db::TestingDb;
 
-use nu_protocol::engine::StateWorkingSet;
-
-use alias::AliasExpr;
 use and::AndDb;
-use col::ColExpr;
+use as_::AliasDb;
 use collect::CollectDb;
-use command::Database;
-use describe::DescribeDb;
-use from::FromDb;
-use function::FunctionExpr;
+pub(crate) use describe::DescribeDb;
+pub(crate) use from_table::FromDb;
 use group_by::GroupByDb;
+pub(crate) use into_db::ToDataBase;
+use into_sqlite::IntoSqliteDb;
 use join::JoinDb;
 use limit::LimitDb;
-use open::OpenDb;
+use nu_protocol::engine::StateWorkingSet;
+use open_db::OpenDb;
 use or::OrDb;
 use order_by::OrderByDb;
-use over::OverExpr;
-use query::QueryDb;
+use query_db::QueryDb;
 use schema::SchemaDb;
-use select::ProjectionDb;
+pub(crate) use select::ProjectionDb;
 use where_::WhereDb;
 
-pub fn add_database_decls(working_set: &mut StateWorkingSet) {
+pub fn add_commands_decls(working_set: &mut StateWorkingSet) {
     macro_rules! bind_command {
             ( $command:expr ) => {
                 working_set.add_decl(Box::new($command));
@@ -59,21 +54,19 @@ pub fn add_database_decls(working_set: &mut StateWorkingSet) {
 
     // Series commands
     bind_command!(
-        AliasExpr,
+        ToDataBase,
+        AliasDb,
         AndDb,
-        ColExpr,
         CollectDb,
-        Database,
         DescribeDb,
         FromDb,
-        FunctionExpr,
         GroupByDb,
+        IntoSqliteDb,
         JoinDb,
         LimitDb,
         OpenDb,
         OrderByDb,
         OrDb,
-        OverExpr,
         QueryDb,
         ProjectionDb,
         SchemaDb,

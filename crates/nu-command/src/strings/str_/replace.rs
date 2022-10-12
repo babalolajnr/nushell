@@ -1,16 +1,16 @@
+use fancy_regex::{NoExpand, Regex};
 use nu_engine::CallExt;
 use nu_protocol::{
     ast::{Call, CellPath},
     engine::{Command, EngineState, Stack},
     Category, Example, PipelineData, ShellError, Signature, Span, Spanned, SyntaxShape, Value,
 };
-use regex::{NoExpand, Regex};
 use std::sync::Arc;
 
 struct Arguments {
     all: bool,
-    find: String,
-    replace: String,
+    find: Spanned<String>,
+    replace: Spanned<String>,
     column_paths: Vec<CellPath>,
     literal_replace: bool,
     no_regex: bool,
@@ -49,6 +49,10 @@ impl Command for SubCommand {
 
     fn usage(&self) -> &str {
         "Find and replace text"
+    }
+
+    fn search_terms(&self) -> Vec<&str> {
+        vec!["search", "shift", "switch"]
     }
 
     fn run(
@@ -129,6 +133,23 @@ impl Command for SubCommand {
                     span: Span::test_data(),
                 }),
             },
+            Example {
+                description: "Find and replace with fancy-regex",
+                example: r#"'a sucessful b' | str replace '\b([sS])uc(?:cs|s?)e(ed(?:ed|ing|s?)|ss(?:es|ful(?:ly)?|i(?:ons?|ve(?:ly)?)|ors?)?)\b' '${1}ucce$2'"#,
+                result: Some(Value::String {
+                    val: "a successful b".to_string(),
+                    span: Span::test_data(),
+                }),
+            },
+            Example {
+                description: "Find and replace with fancy-regex",
+                example: r#"'GHIKK-9+*' | str replace '[*[:xdigit:]+]' 'z'"#,
+                result: Some(Value::String {
+                    val: "GHIKK-z+*".to_string(),
+                    span: Span::test_data(),
+                }),
+            },
+
         ]
     }
 }
@@ -147,8 +168,8 @@ fn operate(
 
     let options = Arc::new(Arguments {
         all: call.has_flag("all"),
-        find: find.item,
-        replace: replace.item,
+        find,
+        replace,
         column_paths: call.rest(engine_state, stack, 2)?,
         literal_replace,
         no_regex,
@@ -193,23 +214,23 @@ fn action(
 ) -> Value {
     match input {
         Value::String { val, .. } => {
-            let FindReplace(find, replacement) = FindReplace(find, replace);
+            let FindReplace(find_str, replace_str) = FindReplace(&find.item, &replace.item);
             if *no_regex {
                 // just use regular string replacement vs regular expressions
                 if *all {
                     Value::String {
-                        val: val.replace(find, replacement),
+                        val: val.replace(find_str, replace_str),
                         span: head,
                     }
                 } else {
                     Value::String {
-                        val: val.replacen(find, replacement, 1),
+                        val: val.replacen(find_str, replace_str, 1),
                         span: head,
                     }
                 }
             } else {
                 // use regular expressions to replace strings
-                let regex = Regex::new(find);
+                let regex = Regex::new(find_str);
 
                 match regex {
                     Ok(re) => {
@@ -217,9 +238,9 @@ fn action(
                             Value::String {
                                 val: {
                                     if *literal_replace {
-                                        re.replace_all(val, NoExpand(replacement)).to_string()
+                                        re.replace_all(val, NoExpand(replace_str)).to_string()
                                     } else {
-                                        re.replace_all(val, replacement).to_string()
+                                        re.replace_all(val, replace_str).to_string()
                                     }
                                 },
                                 span: head,
@@ -228,18 +249,17 @@ fn action(
                             Value::String {
                                 val: {
                                     if *literal_replace {
-                                        re.replace(val, NoExpand(replacement)).to_string()
+                                        re.replace(val, NoExpand(replace_str)).to_string()
                                     } else {
-                                        re.replace(val, replacement).to_string()
+                                        re.replace(val, replace_str).to_string()
                                     }
                                 },
                                 span: head,
                             }
                         }
                     }
-                    Err(_) => Value::String {
-                        val: val.to_string(),
-                        span: head,
+                    Err(e) => Value::Error {
+                        error: ShellError::UnsupportedInput(format!("{e}"), find.span),
                     },
                 }
             }
@@ -261,6 +281,13 @@ mod tests {
     use super::*;
     use super::{action, Arguments, SubCommand};
 
+    fn test_spanned_string(val: &str) -> Spanned<String> {
+        Spanned {
+            item: String::from(val),
+            span: Span::test_data(),
+        }
+    }
+
     #[test]
     fn test_examples() {
         use crate::test_examples;
@@ -276,8 +303,8 @@ mod tests {
         };
 
         let options = Arguments {
-            find: String::from("Cargo.(.+)"),
-            replace: String::from("Carga.$1"),
+            find: test_spanned_string("Cargo.(.+)"),
+            replace: test_spanned_string("Carga.$1"),
             column_paths: vec![],
             literal_replace: false,
             all: false,

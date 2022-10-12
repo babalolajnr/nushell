@@ -14,6 +14,7 @@ const GLOB_PARAMS: nu_glob::MatchOptions = nu_glob::MatchOptions {
     case_sensitive: true,
     require_literal_separator: false,
     require_literal_leading_dot: false,
+    recursive_match_hidden_dir: true,
 };
 
 #[derive(Clone)]
@@ -30,7 +31,7 @@ impl Command for Mv {
     }
 
     fn search_terms(&self) -> Vec<&str> {
-        vec!["mv", "move"]
+        vec!["move"]
     }
 
     fn signature(&self) -> nu_protocol::Signature {
@@ -64,6 +65,15 @@ impl Command for Mv {
     ) -> Result<nu_protocol::PipelineData, nu_protocol::ShellError> {
         // TODO: handle invalid directory or insufficient permissions when moving
         let spanned_source: Spanned<String> = call.req(engine_state, stack, 0)?;
+        let spanned_source = {
+            Spanned {
+                item: match strip_ansi_escapes::strip(&spanned_source.item) {
+                    Ok(item) => String::from_utf8(item).unwrap_or(spanned_source.item),
+                    Err(_) => spanned_source.item,
+                },
+                span: spanned_source.span,
+            }
+        };
         let spanned_destination: Spanned<String> = call.req(engine_state, stack, 1)?;
         let verbose = call.has_flag("verbose");
         let interactive = call.has_flag("interactive");
@@ -110,6 +120,21 @@ impl Command for Mv {
             ));
         }
 
+        if source.is_dir() && destination.is_dir() {
+            if let Some(name) = source.file_name() {
+                let dst = destination.join(name);
+                if dst.is_dir() {
+                    return Err(ShellError::GenericError(
+                        format!("Can't move {:?} to {:?}", source, dst),
+                        "Directory not empty".into(),
+                        Some(spanned_destination.span),
+                        None,
+                        Vec::new(),
+                    ));
+                }
+            }
+        }
+
         let some_if_source_is_destination = sources
             .iter()
             .find(|f| matches!(f, Ok(f) if destination.starts_with(f)));
@@ -118,7 +143,7 @@ impl Command for Mv {
                 return Err(ShellError::GenericError(
                     format!(
                         "Not possible to move {:?} to itself",
-                        filename.file_name().expect("Invalid file name")
+                        filename.file_name().unwrap_or(filename.as_os_str())
                     ),
                     "cannot move to itself".into(),
                     Some(spanned_destination.span),
@@ -129,10 +154,7 @@ impl Command for Mv {
         }
 
         if let Some(Ok(_filename)) = some_if_source_is_destination {
-            sources = sources
-                .into_iter()
-                .filter(|f| matches!(f, Ok(f) if !destination.starts_with(f)))
-                .collect();
+            sources.retain(|f| matches!(f, Ok(f) if !destination.starts_with(f)));
         }
 
         let span = call.head;
@@ -154,18 +176,17 @@ impl Command for Mv {
                 if let Err(error) = result {
                     Some(Value::Error { error })
                 } else if verbose {
-                    let val = if result.expect("Error value when unwrapping mv result") {
-                        format!(
+                    let val = match result {
+                        Ok(true) => format!(
                             "moved {:} to {:}",
                             entry.to_string_lossy(),
                             destination.to_string_lossy()
-                        )
-                    } else {
-                        format!(
+                        ),
+                        _ => format!(
                             "{:} not moved to {:}",
                             entry.to_string_lossy(),
                             destination.to_string_lossy()
-                        )
+                        ),
                     };
                     Some(Value::String { val, span })
                 } else {
@@ -229,8 +250,12 @@ fn move_file(
         return Err(ShellError::DirectoryNotFound(to_span, None));
     }
 
+    // This can happen when changing case on a case-insensitive filesystem (ex: changing foo to Foo on Windows)
+    // When it does, we want to do a plain rename instead of moving `from` into `to`
+    let from_to_are_same_file = same_file::is_same_file(&from, &to).unwrap_or(false);
+
     let mut to = to;
-    if to.is_dir() {
+    if !from_to_are_same_file && to.is_dir() {
         let from_file_name = match from.file_name() {
             Some(name) => name,
             None => return Err(ShellError::DirectoryNotFound(to_span, None)),
@@ -276,13 +301,30 @@ fn move_item(from: &Path, from_span: Span, to: &Path) -> Result<(), ShellError> 
             fs_extra::dir::move_dir(from, to, &options)
         } {
             Ok(_) => Ok(()),
-            Err(e) => Err(ShellError::GenericError(
-                format!("Could not move {:?} to {:?}. {:}", from, to, e),
-                "could not move".into(),
-                Some(from_span),
-                None,
-                Vec::new(),
-            )),
+            Err(e) => {
+                let error_kind = match e.kind {
+                    fs_extra::error::ErrorKind::Io(io) => {
+                        format!("I/O error: {}", io)
+                    }
+                    fs_extra::error::ErrorKind::StripPrefix(sp) => {
+                        format!("Strip prefix error: {}", sp)
+                    }
+                    fs_extra::error::ErrorKind::OsString(os) => {
+                        format!("OsString error: {:?}", os.to_str())
+                    }
+                    _ => e.to_string(),
+                };
+                Err(ShellError::GenericError(
+                    format!(
+                        "Could not move {:?} to {:?}. Error Kind: {}",
+                        from, to, error_kind
+                    ),
+                    "could not move".into(),
+                    Some(from_span),
+                    None,
+                    Vec::new(),
+                ))
+            }
         }
     })
 }

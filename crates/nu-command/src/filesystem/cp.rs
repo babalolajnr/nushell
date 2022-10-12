@@ -19,6 +19,7 @@ const GLOB_PARAMS: nu_glob::MatchOptions = nu_glob::MatchOptions {
     case_sensitive: true,
     require_literal_separator: false,
     require_literal_leading_dot: false,
+    recursive_match_hidden_dir: true,
 };
 
 #[derive(Clone)]
@@ -35,7 +36,7 @@ impl Command for Cp {
     }
 
     fn search_terms(&self) -> Vec<&str> {
-        vec!["cp", "copy", "file", "files"]
+        vec!["copy", "file", "files"]
     }
 
     fn signature(&self) -> Signature {
@@ -49,16 +50,16 @@ impl Command for Cp {
             )
             .switch(
                 "verbose",
-                "do copy in verbose mode (default:false)",
+                "show successful copies in addition to failed copies (default:false)",
                 Some('v'),
             )
             // TODO: add back in additional features
             // .switch("force", "suppress error when no file", Some('f'))
             .switch("interactive", "ask user to confirm action", Some('i'))
             .switch(
-                "no-dereference",
-                "If the -r option is specified, no symbolic links are followed.",
-                Some('p'),
+                "no-symlink",
+                "no symbolic links are followed, only works if -r is active",
+                Some('n'),
             )
             .category(Category::FileSystem)
     }
@@ -71,6 +72,15 @@ impl Command for Cp {
         _input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
         let src: Spanned<String> = call.req(engine_state, stack, 0)?;
+        let src = {
+            Spanned {
+                item: match strip_ansi_escapes::strip(&src.item) {
+                    Ok(item) => String::from_utf8(item).unwrap_or(src.item),
+                    Err(_) => src.item,
+                },
+                span: src.span,
+            }
+        };
         let dst: Spanned<String> = call.req(engine_state, stack, 1)?;
         let recursive = call.has_flag("recursive");
         let verbose = call.has_flag("verbose");
@@ -80,7 +90,6 @@ impl Command for Cp {
         let source = current_dir_path.join(src.item.as_str());
         let destination = current_dir_path.join(dst.item.as_str());
 
-        // check if destination is a dir and it exists
         let path_last_char = destination.as_os_str().to_string_lossy().chars().last();
         let is_directory = path_last_char == Some('/') || path_last_char == Some('\\');
         if is_directory && !destination.exists() {
@@ -158,7 +167,22 @@ impl Command for Cp {
 
                 for (src, dst) in sources {
                     if src.is_file() {
-                        let res = if interactive && dst.exists() {
+                        let dst =
+                            canonicalize_with(dst.as_path(), &current_dir_path).unwrap_or(dst);
+                        let res = if src == dst {
+                            let message = format!(
+                                "src {:?} and dst {:?} are identical(not copied)",
+                                source, destination
+                            );
+
+                            return Err(ShellError::GenericError(
+                                "Copy aborted".into(),
+                                message,
+                                Some(span),
+                                None,
+                                Vec::new(),
+                            ));
+                        } else if interactive && dst.exists() {
                             interactive_copy(interactive, src, dst, span, copy_file)
                         } else {
                             copy_file(src, dst, span)
@@ -194,7 +218,7 @@ impl Command for Cp {
                     )
                 })?;
 
-                let not_follow_symlink = call.has_flag("no-dereference");
+                let not_follow_symlink = call.has_flag("no-symlink");
                 let sources = sources.paths_applying_with(|(source_file, depth_level)| {
                     let mut dest = destination.clone();
 
@@ -239,7 +263,6 @@ impl Command for Cp {
                             )
                         })?;
                     }
-
                     if s.is_symlink() && not_follow_symlink {
                         let res = if interactive && d.exists() {
                             interactive_copy(interactive, s, d, span, copy_symlink)
@@ -262,7 +285,11 @@ impl Command for Cp {
         if verbose {
             Ok(result.into_iter().into_pipeline_data(ctrlc))
         } else {
-            Ok(PipelineData::new(span))
+            // filter to only errors
+            Ok(result
+                .into_iter()
+                .filter(|v| matches!(v, Value::Error { .. }))
+                .into_pipeline_data(ctrlc))
         }
     }
 
@@ -325,9 +352,22 @@ fn copy_file(src: PathBuf, dst: PathBuf, span: Span) -> Value {
             let msg = format!("copied {:} to {:}", src.display(), dst.display());
             Value::String { val: msg, span }
         }
-        Err(e) => Value::Error {
-            error: ShellError::FileNotFoundCustom(format!("copy file {src:?} failed: {e}"), span),
-        },
+        Err(e) => {
+            let message = format!("copy file {src:?} failed: {e}");
+
+            use std::io::ErrorKind;
+            let shell_error = match e.kind() {
+                ErrorKind::NotFound => ShellError::FileNotFoundCustom(message, span),
+                ErrorKind::PermissionDenied => ShellError::PermissionDeniedError(message, span),
+                ErrorKind::Interrupted => ShellError::IOInterrupted(message, span),
+                ErrorKind::OutOfMemory => ShellError::OutOfMemoryError(message, span),
+                // TODO: handle ExecutableFileBusy etc. when io_error_more is stabilized
+                // https://github.com/rust-lang/rust/issues/86442
+                _ => ShellError::IOErrorSpanned(message, span),
+            };
+
+            Value::Error { error: shell_error }
+        }
     }
 }
 

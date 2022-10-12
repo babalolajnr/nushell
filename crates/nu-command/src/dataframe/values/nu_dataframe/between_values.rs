@@ -1,10 +1,9 @@
 use super::{operations::Axis, NuDataFrame};
-
 use nu_protocol::{ast::Operator, span, ShellError, Span, Spanned, Value};
 use num::Zero;
 use polars::prelude::{
     BooleanType, ChunkCompare, ChunkedArray, DataType, Float64Type, Int64Type, IntoSeries,
-    NumOpsDispatchChecked, PolarsError, Series, TimeUnit,
+    NumOpsDispatchChecked, PolarsError, Series, TimeUnit, Utf8NameSpaceImpl,
 };
 use std::ops::{Add, BitAnd, BitOr, Div, Mul, Sub};
 
@@ -226,6 +225,7 @@ pub(super) fn compute_series_single_value(
             Value::Float { val, .. } => {
                 compute_series_decimal(&lhs, *val, <ChunkedArray<Float64Type>>::add, lhs_span)
             }
+            Value::String { val, .. } => add_string_to_series(&lhs, val, lhs_span),
             _ => Err(ShellError::OperatorMismatch {
                 op_span: operator.span,
                 lhs_ty: left.get_type(),
@@ -293,7 +293,7 @@ pub(super) fn compute_series_single_value(
                 compare_series_decimal(&lhs, *val, ChunkedArray::equal, lhs_span)
             }
             Value::String { val, .. } => {
-                let equal_pattern = format!("^{}$", regex::escape(val));
+                let equal_pattern = format!("^{}$", fancy_regex::escape(val));
                 contains_series_pat(&lhs, &equal_pattern, lhs_span)
             }
             Value::Date { val, .. } => {
@@ -405,7 +405,7 @@ pub(super) fn compute_series_single_value(
         },
         Operator::StartsWith => match &right {
             Value::String { val, .. } => {
-                let starts_with_pattern = format!("^{}", regex::escape(val));
+                let starts_with_pattern = format!("^{}", fancy_regex::escape(val));
                 contains_series_pat(&lhs, &starts_with_pattern, lhs_span)
             }
             _ => Err(ShellError::OperatorMismatch {
@@ -418,7 +418,7 @@ pub(super) fn compute_series_single_value(
         },
         Operator::EndsWith => match &right {
             Value::String { val, .. } => {
-                let ends_with_pattern = format!("{}$", regex::escape(val));
+                let ends_with_pattern = format!("{}$", fancy_regex::escape(val));
                 contains_series_pat(&lhs, &ends_with_pattern, lhs_span)
             }
             _ => Err(ShellError::OperatorMismatch {
@@ -748,6 +748,25 @@ fn contains_series_pat(series: &Series, pat: &str, span: Span) -> Result<Value, 
                     Vec::new(),
                 )),
             }
+        }
+        Err(e) => Err(ShellError::GenericError(
+            "Unable to cast to string".into(),
+            e.to_string(),
+            Some(span),
+            None,
+            Vec::new(),
+        )),
+    }
+}
+
+fn add_string_to_series(series: &Series, pat: &str, span: Span) -> Result<Value, ShellError> {
+    let casted = series.utf8();
+    match casted {
+        Ok(casted) => {
+            let res = casted + pat;
+            let res = res.into_series();
+
+            NuDataFrame::series_to_value(res, span)
         }
         Err(e) => Err(ShellError::GenericError(
             "Unable to cast to string".into(),

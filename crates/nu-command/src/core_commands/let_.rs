@@ -28,11 +28,15 @@ impl Command for Let {
 
     fn extra_usage(&self) -> &str {
         r#"This command is a parser keyword. For details, check:
-  https://www.nushell.sh/book/thinking_in_nushell.html"#
+  https://www.nushell.sh/book/thinking_in_nu.html"#
     }
 
     fn is_parser_keyword(&self) -> bool {
         true
+    }
+
+    fn search_terms(&self) -> Vec<&str> {
+        vec!["set", "const"]
     }
 
     fn run(
@@ -61,7 +65,8 @@ impl Command for Let {
             input,
             call.redirect_stdout,
             call.redirect_stderr,
-        )?;
+        )?
+        .0;
 
         //println!("Adding: {:?} to {}", rhs, var_id);
 

@@ -29,6 +29,10 @@ impl Command for SubCommand {
         "Convert a string to Title Case"
     }
 
+    fn search_terms(&self) -> Vec<&str> {
+        vec!["convert", "style", "convention"]
+    }
+
     fn run(
         &self,
         engine_state: &EngineState,

@@ -4,7 +4,8 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, SyntaxShape, Value,
+    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span, SyntaxShape,
+    Type, Value,
 };
 use sqlparser::ast::Statement;
 
@@ -13,7 +14,7 @@ pub struct LimitDb;
 
 impl Command for LimitDb {
     fn name(&self) -> &str {
-        "db limit"
+        "limit"
     }
 
     fn usage(&self) -> &str {
@@ -27,22 +28,37 @@ impl Command for LimitDb {
                 SyntaxShape::Int,
                 "Number of rows to extract for query",
             )
+            .input_type(Type::Custom("database".into()))
+            .output_type(Type::Custom("database".into()))
             .category(Category::Custom("database".into()))
     }
 
     fn search_terms(&self) -> Vec<&str> {
-        vec!["database", "limit"]
+        vec!["database", "head", "tail"]
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Limits selection from table",
-            example: r#"db open db.mysql 
-    | db from table_a 
-    | db select a 
-    | db limit 10 
-    | db describe"#,
-            result: None,
+            example: r#"open db.sqlite
+    | from table table_a
+    | select a
+    | limit 10
+    | describe"#,
+            result: Some(Value::Record {
+                cols: vec!["connection".into(), "query".into()],
+                vals: vec![
+                    Value::String {
+                        val: "db.sqlite".into(),
+                        span: Span::test_data(),
+                    },
+                    Value::String {
+                        val: "SELECT a FROM table_a LIMIT 10".into(),
+                        span: Span::test_data(),
+                    },
+                ],
+                span: Span::test_data(),
+            }),
         }]
     }
 
@@ -82,5 +98,25 @@ impl Command for LimitDb {
         };
 
         Ok(db.into_value(call.head).into_pipeline_data())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::super::super::expressions::{FieldExpr, OrExpr};
+    use super::super::{FromDb, ProjectionDb, WhereDb};
+    use super::*;
+    use crate::database::test_database::test_database;
+
+    #[test]
+    fn test_examples() {
+        test_database(vec![
+            Box::new(LimitDb {}),
+            Box::new(ProjectionDb {}),
+            Box::new(FromDb {}),
+            Box::new(WhereDb {}),
+            Box::new(FieldExpr {}),
+            Box::new(OrExpr {}),
+        ])
     }
 }

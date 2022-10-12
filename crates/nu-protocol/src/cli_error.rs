@@ -1,5 +1,5 @@
 use crate::engine::StateWorkingSet;
-use miette::{LabeledSpan, MietteHandlerOpts, ReportHandler, Severity, SourceCode};
+use miette::{LabeledSpan, MietteHandlerOpts, ReportHandler, RgbColors, Severity, SourceCode};
 use thiserror::Error;
 
 /// This error exists so that we can defer SourceCode handling. It simply
@@ -15,7 +15,7 @@ pub fn format_error(
     working_set: &StateWorkingSet,
     error: &(dyn miette::Diagnostic + Send + Sync + 'static),
 ) -> String {
-    return format!("Error: {:?}", CliError(error, working_set));
+    format!("Error: {:?}", CliError(error, working_set))
 }
 
 impl std::fmt::Debug for CliError<'_> {
@@ -24,14 +24,17 @@ impl std::fmt::Debug for CliError<'_> {
 
         let miette_handler = MietteHandlerOpts::new()
             // For better support of terminal themes use the ANSI coloring
-            .rgb_colors(false)
-            .ansi_colors(true)
+            .rgb_colors(RgbColors::Never)
             // If ansi support is disabled in the config disable the eye-candy
             .color(ansi_support)
             .unicode(ansi_support)
             .terminal_links(ansi_support)
             .build();
-        miette_handler.debug(self, f)?;
+
+        // Ignore error to prevent format! panics. This can happen if span points at some
+        // inaccessible location, for example by calling `report_error()` with wrong working set.
+        let _ = miette_handler.debug(self, f);
+
         Ok(())
     }
 }

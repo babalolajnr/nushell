@@ -49,6 +49,13 @@ impl Command for DropColumn {
             1
         };
 
+        // Make columns to drop is positive
+        if columns_to_drop < 0 {
+            if let Some(expr) = call.positional_nth(0) {
+                return Err(ShellError::NeedsPositiveValue(expr.span));
+            }
+        }
+
         dropcol(engine_state, span, input, columns_to_drop)
     }
 
@@ -101,7 +108,7 @@ fn dropcol(
                 let mut vals = vec![];
 
                 for path in &keep_columns {
-                    let fetcher = input_val.clone().follow_cell_path(&path.members)?;
+                    let fetcher = input_val.clone().follow_cell_path(&path.members, false)?;
                     cols.push(path.into_string());
                     vals.push(fetcher);
                 }
@@ -125,7 +132,7 @@ fn dropcol(
                 let mut vals = vec![];
 
                 for path in &keep_columns {
-                    let fetcher = input_val.clone().follow_cell_path(&path.members)?;
+                    let fetcher = input_val.clone().follow_cell_path(&path.members, false)?;
                     cols.push(path.into_string());
                     vals.push(fetcher);
                 }
@@ -141,7 +148,7 @@ fn dropcol(
             let mut vals = vec![];
 
             for cell_path in &keep_columns {
-                let result = v.clone().follow_cell_path(&cell_path.members)?;
+                let result = v.clone().follow_cell_path(&cell_path.members, false)?;
 
                 cols.push(cell_path.into_string());
                 vals.push(result);

@@ -161,7 +161,7 @@ impl Command for Char {
                 SyntaxShape::Any,
                 "the name of the character to output",
             )
-            .rest("rest", SyntaxShape::String, "multiple Unicode bytes")
+            .rest("rest", SyntaxShape::Any, "multiple Unicode bytes")
             .switch("list", "List all supported character names", Some('l'))
             .switch("unicode", "Unicode string i.e. 1f378", Some('u'))
             .switch("integer", "Create a codepoint from an integer", Some('i'))
@@ -185,7 +185,7 @@ impl Command for Char {
             },
             Example {
                 description: "Output prompt character, newline and a hamburger character",
-                example: r#"echo [(char prompt) (char newline) (char hamburger)] | str collect"#,
+                example: r#"echo [(char prompt) (char newline) (char hamburger)] | str join"#,
                 result: Some(Value::test_string("\u{25b6}\n\u{2261}")),
             },
             Example {

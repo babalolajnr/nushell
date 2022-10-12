@@ -28,8 +28,13 @@ impl Command for Get {
             .rest("rest", SyntaxShape::CellPath, "additional cell paths")
             .switch(
                 "ignore-errors",
-                "return nothing if path can't be found",
+                "when there are empty cells, instead of erroring out, replace them with nothing",
                 Some('i'),
+            )
+            .switch(
+                "sensitive",
+                "get path in a case sensitive manner",
+                Some('s'),
             )
             .category(Category::Filters)
     }
@@ -44,13 +49,14 @@ impl Command for Get {
         let span = call.head;
         let cell_path: CellPath = call.req(engine_state, stack, 0)?;
         let rest: Vec<CellPath> = call.rest(engine_state, stack, 1)?;
+        let sensitive = call.has_flag("sensitive");
         let ignore_errors = call.has_flag("ignore-errors");
         let ctrlc = engine_state.ctrlc.clone();
         let metadata = input.metadata();
 
         if rest.is_empty() {
             let output = input
-                .follow_cell_path(&cell_path.members, call.head)
+                .follow_cell_path(&cell_path.members, call.head, !sensitive)
                 .map(|x| x.into_pipeline_data());
 
             if ignore_errors {
@@ -69,7 +75,7 @@ impl Command for Get {
             let input = input.into_value(span);
 
             for path in paths {
-                let val = input.clone().follow_cell_path(&path.members);
+                let val = input.clone().follow_cell_path(&path.members, !sensitive);
 
                 if ignore_errors {
                     if let Ok(val) = val {
@@ -104,6 +110,16 @@ impl Command for Get {
             Example {
                 description: "Extract the cpu list from the sys information record",
                 example: "sys | get cpu",
+                result: None,
+            },
+            Example {
+                description: "Getting Path/PATH in a case insensitive way",
+                example: "$env | get paTH",
+                result: None,
+            },
+            Example {
+                description: "Getting Path in a case sensitive way, won't work for 'PATH'",
+                example: "$env | get -s Path",
                 result: None,
             },
         ]

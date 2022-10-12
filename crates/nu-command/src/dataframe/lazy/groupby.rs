@@ -1,9 +1,9 @@
-use crate::dataframe::values::{NuExpression, NuLazyFrame, NuLazyGroupBy};
+use crate::dataframe::values::{Column, NuDataFrame, NuExpression, NuLazyFrame, NuLazyGroupBy};
 use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
 };
 use polars::prelude::Expr;
 
@@ -12,7 +12,7 @@ pub struct ToLazyGroupBy;
 
 impl Command for ToLazyGroupBy {
     fn name(&self) -> &str {
-        "dfr group-by"
+        "group-by"
     }
 
     fn usage(&self) -> &str {
@@ -26,6 +26,8 @@ impl Command for ToLazyGroupBy {
                 SyntaxShape::Any,
                 "Expression(s) that define the lazy group by",
             )
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .category(Category::Custom("lazyframe".into()))
     }
 
@@ -34,28 +36,69 @@ impl Command for ToLazyGroupBy {
             Example {
                 description: "Group by and perform an aggregation",
                 example: r#"[[a b]; [1 2] [1 4] [2 6] [2 4]]
-    | dfr to-df
-    | dfr group-by a
-    | dfr aggregate [
-        ("b" | dfr min | dfr as "b_min")
-        ("b" | dfr max | dfr as "b_max")
-        ("b" | dfr sum | dfr as "b_sum")
+    | into df
+    | group-by a
+    | agg [
+        (col b | min | as "b_min")
+        (col b | max | as "b_max")
+        (col b | sum | as "b_sum")
      ]"#,
-                result: None,
+                result: Some(
+                    NuDataFrame::try_from_columns(vec![
+                        Column::new(
+                            "a".to_string(),
+                            vec![Value::test_int(1), Value::test_int(2)],
+                        ),
+                        Column::new(
+                            "b_min".to_string(),
+                            vec![Value::test_int(2), Value::test_int(4)],
+                        ),
+                        Column::new(
+                            "b_max".to_string(),
+                            vec![Value::test_int(4), Value::test_int(6)],
+                        ),
+                        Column::new(
+                            "b_sum".to_string(),
+                            vec![Value::test_int(6), Value::test_int(10)],
+                        ),
+                    ])
+                    .expect("simple df for test should not fail")
+                    .into_value(Span::test_data()),
+                ),
             },
             Example {
                 description: "Group by and perform an aggregation",
                 example: r#"[[a b]; [1 2] [1 4] [2 6] [2 4]]
-    | dfr to-df
-    | dfr to-lazy
-    | dfr group-by a
-    | dfr aggregate [
-        ("b" | dfr min | dfr as "b_min")
-        ("b" | dfr max | dfr as "b_max")
-        ("b" | dfr sum | dfr as "b_sum")
+    | into lazy
+    | group-by a
+    | agg [
+        (col b | min | as "b_min")
+        (col b | max | as "b_max")
+        (col b | sum | as "b_sum")
      ]
-    | dfr collect"#,
-                result: None,
+    | collect"#,
+                result: Some(
+                    NuDataFrame::try_from_columns(vec![
+                        Column::new(
+                            "a".to_string(),
+                            vec![Value::test_int(1), Value::test_int(2)],
+                        ),
+                        Column::new(
+                            "b_min".to_string(),
+                            vec![Value::test_int(2), Value::test_int(4)],
+                        ),
+                        Column::new(
+                            "b_max".to_string(),
+                            vec![Value::test_int(4), Value::test_int(6)],
+                        ),
+                        Column::new(
+                            "b_sum".to_string(),
+                            vec![Value::test_int(6), Value::test_int(10)],
+                        ),
+                    ])
+                    .expect("simple df for test should not fail")
+                    .into_value(Span::test_data()),
+                ),
             },
         ]
     }
@@ -85,14 +128,33 @@ impl Command for ToLazyGroupBy {
             ));
         }
 
-        let value = input.into_value(call.head);
-        let (lazy, from_eager) = NuLazyFrame::maybe_is_eager(value)?;
-
+        let lazy = NuLazyFrame::try_from_pipeline(input, call.head)?;
         let group_by = NuLazyGroupBy {
+            schema: lazy.schema.clone(),
+            from_eager: lazy.from_eager,
             group_by: Some(lazy.into_polars().groupby(&expressions)),
-            from_eager,
         };
 
         Ok(PipelineData::Value(group_by.into_value(call.head), None))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::super::super::test_dataframe::test_dataframe;
+    use super::*;
+    use crate::dataframe::expressions::{ExprAlias, ExprMax, ExprMin, ExprSum};
+    use crate::dataframe::lazy::aggregate::LazyAggregate;
+
+    #[test]
+    fn test_examples() {
+        test_dataframe(vec![
+            Box::new(LazyAggregate {}),
+            Box::new(ToLazyGroupBy {}),
+            Box::new(ExprAlias {}),
+            Box::new(ExprMin {}),
+            Box::new(ExprMax {}),
+            Box::new(ExprSum {}),
+        ])
     }
 }

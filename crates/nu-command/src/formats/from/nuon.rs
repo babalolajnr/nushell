@@ -265,6 +265,12 @@ fn convert_to_value(
             "imports not supported in nuon".into(),
             expr.span,
         )),
+        Expr::Overlay(..) => Err(ShellError::OutsideSpannedLabeledError(
+            original_text.to_string(),
+            "Error when loading".into(),
+            "overlays not supported in nuon".into(),
+            expr.span,
+        )),
         Expr::Int(val) => Ok(Value::Int { val, span }),
         Expr::Keyword(kw, ..) => Err(ShellError::OutsideSpannedLabeledError(
             original_text.to_string(),
@@ -442,6 +448,14 @@ fn convert_to_value(
                     val: size * 1000 * 1000 * 1000 * 1000 * 1000,
                     span,
                 }),
+                Unit::Exabyte => Ok(Value::Filesize {
+                    val: size * 1000 * 1000 * 1000 * 1000 * 1000 * 1000,
+                    span,
+                }),
+                Unit::Zettabyte => Ok(Value::Filesize {
+                    val: size * 1000 * 1000 * 1000 * 1000 * 1000 * 1000 * 1000,
+                    span,
+                }),
 
                 Unit::Kibibyte => Ok(Value::Filesize {
                     val: size * 1024,
@@ -461,6 +475,14 @@ fn convert_to_value(
                 }),
                 Unit::Pebibyte => Ok(Value::Filesize {
                     val: size * 1024 * 1024 * 1024 * 1024 * 1024,
+                    span,
+                }),
+                Unit::Exbibyte => Ok(Value::Filesize {
+                    val: size * 1024 * 1024 * 1024 * 1024 * 1024 * 1024,
+                    span,
+                }),
+                Unit::Zebibyte => Ok(Value::Filesize {
+                    val: size * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024,
                     span,
                 }),
 
@@ -489,8 +511,8 @@ fn convert_to_value(
                     Some(val) => Ok(Value::Duration { val, span }),
                     None => Err(ShellError::OutsideSpannedLabeledError(
                         original_text.to_string(),
-                        "duration too large".into(),
-                        "duration too large".into(),
+                        "day duration too large".into(),
+                        "day duration too large".into(),
                         expr.span,
                     )),
                 },
@@ -499,8 +521,8 @@ fn convert_to_value(
                     Some(val) => Ok(Value::Duration { val, span }),
                     None => Err(ShellError::OutsideSpannedLabeledError(
                         original_text.to_string(),
-                        "duration too large".into(),
-                        "duration too large".into(),
+                        "week duration too large".into(),
+                        "week duration too large".into(),
                         expr.span,
                     )),
                 },

@@ -1,9 +1,9 @@
-use crate::dataframe::values::{NuExpression, NuLazyFrame};
+use crate::dataframe::values::{Column, NuDataFrame, NuExpression, NuLazyFrame};
 use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
 };
 use polars::prelude::{Expr, JoinType};
 
@@ -12,7 +12,7 @@ pub struct LazyJoin;
 
 impl Command for LazyJoin {
     fn name(&self) -> &str {
-        "dfr join"
+        "join"
     }
 
     fn usage(&self) -> &str {
@@ -38,6 +38,8 @@ impl Command for LazyJoin {
                 "Suffix to use on columns with same name",
                 Some('s'),
             )
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .category(Category::Custom("lazyframe".into()))
     }
 
@@ -45,17 +47,117 @@ impl Command for LazyJoin {
         vec![
             Example {
                 description: "Join two lazy dataframes",
-                example: r#"let df_a = ([[a b c];[1 "a" 0] [2 "b" 1] [1 "c" 2] [1 "c" 3]] | dfr to-lazy);
-    let df_b = ([["foo" "bar" "ham"];[1 "a" "let"] [1 "c" "var"] [1 "c" "const"]] | dfr to-lazy);
-    $df_a | dfr join $df_b a foo | dfr collect"#,
-                result: None,
+                example: r#"let df_a = ([[a b c];[1 "a" 0] [2 "b" 1] [1 "c" 2] [1 "c" 3]] | into lazy);
+    let df_b = ([["foo" "bar" "ham"];[1 "a" "let"] [2 "c" "var"] [3 "c" "const"]] | into lazy);
+    $df_a | join $df_b a foo | collect"#,
+                result: Some(
+                    NuDataFrame::try_from_columns(vec![
+                        Column::new(
+                            "a".to_string(),
+                            vec![
+                                Value::test_int(1),
+                                Value::test_int(2),
+                                Value::test_int(1),
+                                Value::test_int(1),
+                            ],
+                        ),
+                        Column::new(
+                            "b".to_string(),
+                            vec![
+                                Value::test_string("a"),
+                                Value::test_string("b"),
+                                Value::test_string("c"),
+                                Value::test_string("c"),
+                            ],
+                        ),
+                        Column::new(
+                            "c".to_string(),
+                            vec![
+                                Value::test_int(0),
+                                Value::test_int(1),
+                                Value::test_int(2),
+                                Value::test_int(3),
+                            ],
+                        ),
+                        Column::new(
+                            "bar".to_string(),
+                            vec![
+                                Value::test_string("a"),
+                                Value::test_string("c"),
+                                Value::test_string("a"),
+                                Value::test_string("a"),
+                            ],
+                        ),
+                        Column::new(
+                            "ham".to_string(),
+                            vec![
+                                Value::test_string("let"),
+                                Value::test_string("var"),
+                                Value::test_string("let"),
+                                Value::test_string("let"),
+                            ],
+                        ),
+                    ])
+                    .expect("simple df for test should not fail")
+                    .into_value(Span::test_data()),
+                ),
             },
             Example {
                 description: "Join one eager dataframe with a lazy dataframe",
-                example: r#"let df_a = ([[a b c];[1 "a" 0] [2 "b" 1] [1 "c" 2] [1 "c" 3]] | dfr to-df);
-    let df_b = ([["foo" "bar" "ham"];[1 "a" "let"] [1 "c" "var"] [1 "c" "const"]] | dfr to-lazy);
-    $df_a | dfr join $df_b a foo"#,
-                result: None,
+                example: r#"let df_a = ([[a b c];[1 "a" 0] [2 "b" 1] [1 "c" 2] [1 "c" 3]] | into df);
+    let df_b = ([["foo" "bar" "ham"];[1 "a" "let"] [2 "c" "var"] [3 "c" "const"]] | into lazy);
+    $df_a | join $df_b a foo"#,
+                result: Some(
+                    NuDataFrame::try_from_columns(vec![
+                        Column::new(
+                            "a".to_string(),
+                            vec![
+                                Value::test_int(1),
+                                Value::test_int(2),
+                                Value::test_int(1),
+                                Value::test_int(1),
+                            ],
+                        ),
+                        Column::new(
+                            "b".to_string(),
+                            vec![
+                                Value::test_string("a"),
+                                Value::test_string("b"),
+                                Value::test_string("c"),
+                                Value::test_string("c"),
+                            ],
+                        ),
+                        Column::new(
+                            "c".to_string(),
+                            vec![
+                                Value::test_int(0),
+                                Value::test_int(1),
+                                Value::test_int(2),
+                                Value::test_int(3),
+                            ],
+                        ),
+                        Column::new(
+                            "bar".to_string(),
+                            vec![
+                                Value::test_string("a"),
+                                Value::test_string("c"),
+                                Value::test_string("a"),
+                                Value::test_string("a"),
+                            ],
+                        ),
+                        Column::new(
+                            "ham".to_string(),
+                            vec![
+                                Value::test_string("let"),
+                                Value::test_string("var"),
+                                Value::test_string("let"),
+                                Value::test_string("let"),
+                            ],
+                        ),
+                    ])
+                    .expect("simple df for test should not fail")
+                    .into_value(Span::test_data()),
+                ),
             },
         ]
     }
@@ -82,7 +184,7 @@ impl Command for LazyJoin {
         };
 
         let other: Value = call.req(engine_state, stack, 0)?;
-        let (other, _) = NuLazyFrame::maybe_is_eager(other)?;
+        let other = NuLazyFrame::try_from_value(other)?;
         let other = other.into_polars();
 
         let left_on: Value = call.req(engine_state, stack, 1)?;
@@ -114,10 +216,11 @@ impl Command for LazyJoin {
         let suffix = suffix.unwrap_or_else(|| "_x".into());
 
         let value = input.into_value(call.head);
-        let (lazy, from_eager) = NuLazyFrame::maybe_is_eager(value)?;
+        let lazy = NuLazyFrame::try_from_value(value)?;
+        let from_eager = lazy.from_eager;
         let lazy = lazy.into_polars();
 
-        let lazy: NuLazyFrame = lazy
+        let lazy = lazy
             .join_builder()
             .with(other)
             .left_on(left_on)
@@ -125,15 +228,21 @@ impl Command for LazyJoin {
             .how(how)
             .force_parallel(true)
             .suffix(suffix)
-            .finish()
-            .into();
+            .finish();
 
-        let res = if from_eager {
-            lazy.collect(call.head)?.into_value(call.head)
-        } else {
-            lazy.into_value(call.head)
-        };
+        let lazy = NuLazyFrame::new(from_eager, lazy);
 
-        Ok(PipelineData::Value(res, None))
+        Ok(PipelineData::Value(lazy.into_value(call.head)?, None))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::super::super::test_dataframe::test_dataframe;
+    use super::*;
+
+    #[test]
+    fn test_examples() {
+        test_dataframe(vec![Box::new(LazyJoin {})])
     }
 }

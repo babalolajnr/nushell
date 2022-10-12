@@ -41,7 +41,7 @@ if $os in ['ubuntu-latest', 'macos-latest'] {
     } else {
         # musl-tools to fix 'Failed to find tool. Is `musl-gcc` installed?'
         # Actually just for x86_64-unknown-linux-musl target
-        sudo apt install musl-tools -y
+        if $os == 'ubuntu-latest' { sudo apt install musl-tools -y }
         cargo-build-nu $flags
     }
 }
@@ -50,7 +50,7 @@ if $os in ['ubuntu-latest', 'macos-latest'] {
 # Build for Windows without static-link-openssl feature
 # ----------------------------------------------------------------------------
 if $os in ['windows-latest'] {
-    if ($flags | str trim | empty?) {
+    if ($flags | str trim | is-empty) {
         cargo build --release --all --target $target --features=extra
     } else {
         cargo build --release --all --target $target --features=extra $flags
@@ -76,11 +76,11 @@ cp -v README.release.txt $'($dist)/README.txt'
 
 $'(char nl)Check binary release version detail:'; hr-line
 let ver = if $os == 'windows-latest' {
-    (do -i { ./output/nu.exe -c 'version' }) | str collect
+    (do -i { ./output/nu.exe -c 'version' }) | str join
 } else {
-    (do -i { ./output/nu -c 'version' }) | str collect
+    (do -i { ./output/nu -c 'version' }) | str join
 }
-if ($ver | str trim | empty?) {
+if ($ver | str trim | is-empty) {
     $'(ansi r)Incompatible nu binary...(ansi reset)'
 } else { $ver }
 
@@ -102,8 +102,8 @@ if $os in ['ubuntu-latest', 'macos-latest'] {
     let releaseStem = $'($bin)-($version)-($target)'
 
     $'(char nl)Download less related stuffs...'; hr-line
-    curl https://github.com/jftuga/less-Windows/releases/download/less-v590/less.exe -o $'($dist)\less.exe'
-    curl https://raw.githubusercontent.com/jftuga/less-Windows/master/LICENSE -o $'($dist)\LICENSE-for-less.txt'
+    aria2c https://github.com/jftuga/less-Windows/releases/download/less-v590/less.exe -o less.exe
+    aria2c https://raw.githubusercontent.com/jftuga/less-Windows/master/LICENSE -o LICENSE-for-less.txt
 
     # Create Windows msi release package
     if (get-env _EXTRA_) == 'msi' {
@@ -113,7 +113,7 @@ if $os in ['ubuntu-latest', 'macos-latest'] {
         cd $src; hr-line
         # Wix need the binaries be stored in target/release/
         cp -r $'($dist)/*' target/release/
-        cargo install cargo-wix --version 0.3.2
+        cargo install cargo-wix --version 0.3.3
         cargo wix --no-build --nocapture --package nu --output $wixRelease
         echo $'::set-output name=archive::($wixRelease)'
 
@@ -124,14 +124,14 @@ if $os in ['ubuntu-latest', 'macos-latest'] {
         7z a $archive *
         print $'archive: ---> ($archive)';
         let pkg = (ls -f $archive | get name)
-        if not ($pkg | empty?) {
+        if not ($pkg | is-empty) {
             echo $'::set-output name=archive::($pkg | get 0)'
         }
     }
 }
 
 def 'cargo-build-nu' [ options: string ] {
-    if ($options | str trim | empty?) {
+    if ($options | str trim | is-empty) {
         cargo build --release --all --target $target --features=extra,static-link-openssl
     } else {
         cargo build --release --all --target $target --features=extra,static-link-openssl $options
@@ -143,7 +143,7 @@ def 'hr-line' [
     --blank-line(-b): bool
 ] {
     print $'(ansi g)---------------------------------------------------------------------------->(ansi reset)'
-    if $blank-line { char nl }
+    if $blank_line { char nl }
 }
 
 # Get the specified env key's value or ''

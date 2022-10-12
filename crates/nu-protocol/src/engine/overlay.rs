@@ -1,6 +1,7 @@
+use crate::{AliasId, DeclId, ModuleId, OverlayId, Type, VarId};
+use std::borrow::Borrow;
 use std::collections::HashMap;
-
-use crate::{AliasId, DeclId, ModuleId, OverlayId, VarId};
+use std::hash::{Hash, Hasher};
 
 pub static DEFAULT_OVERLAY_NAME: &str = "zero";
 
@@ -99,9 +100,9 @@ impl ScopeFrame {
         }
     }
 
-    pub fn with_empty_overlay(name: Vec<u8>, origin: ModuleId) -> Self {
+    pub fn with_empty_overlay(name: Vec<u8>, origin: ModuleId, prefixed: bool) -> Self {
         Self {
-            overlays: vec![(name, OverlayFrame::from_origin(origin))],
+            overlays: vec![(name, OverlayFrame::from_origin(origin, prefixed))],
             active_overlays: vec![0],
             removed_overlays: vec![],
             predecls: HashMap::new(),
@@ -199,15 +200,16 @@ impl ScopeFrame {
 pub struct OverlayFrame {
     pub vars: HashMap<Vec<u8>, VarId>,
     pub predecls: HashMap<Vec<u8>, DeclId>, // temporary storage for predeclarations
-    pub decls: HashMap<Vec<u8>, DeclId>,
+    pub decls: HashMap<(Vec<u8>, Type), DeclId>,
     pub aliases: HashMap<Vec<u8>, AliasId>,
     pub modules: HashMap<Vec<u8>, ModuleId>,
     pub visibility: Visibility,
     pub origin: ModuleId, // The original module the overlay was created from
+    pub prefixed: bool,   // Whether the overlay has definitions prefixed with its name
 }
 
 impl OverlayFrame {
-    pub fn from_origin(origin: ModuleId) -> Self {
+    pub fn from_origin(origin: ModuleId, prefixed: bool) -> Self {
         Self {
             vars: HashMap::new(),
             predecls: HashMap::new(),
@@ -216,6 +218,64 @@ impl OverlayFrame {
             modules: HashMap::new(),
             visibility: Visibility::new(),
             origin,
+            prefixed,
         }
+    }
+
+    pub fn insert_decl(&mut self, name: Vec<u8>, input: Type, decl_id: DeclId) -> Option<DeclId> {
+        self.decls.insert((name, input), decl_id)
+    }
+
+    pub fn get_decl(&self, name: &[u8], input: &Type) -> Option<DeclId> {
+        match self.decls.get(&(name, input) as &dyn DeclKey) {
+            Some(decl) => Some(*decl),
+            None => self.decls.get(&(name, &Type::Any) as &dyn DeclKey).cloned(),
+        }
+    }
+}
+
+trait DeclKey {
+    fn name(&self) -> &[u8];
+    fn input(&self) -> &Type;
+}
+
+impl Hash for dyn DeclKey + '_ {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name().hash(state);
+        self.input().hash(state);
+    }
+}
+
+impl PartialEq for dyn DeclKey + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.name() == other.name() && self.input() == other.input()
+    }
+}
+
+impl Eq for dyn DeclKey + '_ {}
+
+impl<'a> DeclKey for (&'a [u8], &Type) {
+    fn name(&self) -> &[u8] {
+        self.0
+    }
+
+    fn input(&self) -> &Type {
+        self.1
+    }
+}
+
+impl DeclKey for (Vec<u8>, Type) {
+    fn name(&self) -> &[u8] {
+        &self.0
+    }
+
+    fn input(&self) -> &Type {
+        &self.1
+    }
+}
+
+impl<'a> Borrow<dyn DeclKey + 'a> for (Vec<u8>, Type) {
+    fn borrow(&self) -> &(dyn DeclKey + 'a) {
+        self
     }
 }

@@ -41,6 +41,10 @@ impl Command for SubCommand {
         "Left-pad a string to a specific length"
     }
 
+    fn search_terms(&self) -> Vec<&str> {
+        vec!["append", "truncate", "padding"]
+    }
+
     fn run(
         &self,
         engine_state: &EngineState,
@@ -70,10 +74,10 @@ impl Command for SubCommand {
                 }),
             },
             Example {
-                description: "Use lpad to truncate a string",
+                description: "Use lpad to truncate a string to its last three characters",
                 example: "'123456789' | str lpad -l 3 -c '0'",
                 result: Some(Value::String {
-                    val: "123".to_string(),
+                    val: "789".to_string(),
                     span: Span::test_data(),
                 }),
             },
@@ -100,6 +104,13 @@ fn operate(
         character: call.get_flag(engine_state, stack, "character")?,
         column_paths: call.rest(engine_state, stack, 0)?,
     });
+
+    if options.length.expect("this exists") < 0 {
+        return Err(ShellError::UnsupportedInput(
+            String::from("The length of the string cannot be negative"),
+            call.head,
+        ));
+    }
 
     let head = call.head;
     input.map(
@@ -138,7 +149,14 @@ fn action(
                 let s = *x as usize;
                 if s < val.len() {
                     Value::String {
-                        val: val.chars().take(s).collect::<String>(),
+                        val: val
+                            .chars()
+                            .rev()
+                            .take(s)
+                            .collect::<String>()
+                            .chars()
+                            .rev()
+                            .collect::<String>(),
                         span: head,
                     }
                 } else {

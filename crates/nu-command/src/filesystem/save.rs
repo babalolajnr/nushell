@@ -20,14 +20,23 @@ impl Command for Save {
     }
 
     fn search_terms(&self) -> Vec<&str> {
-        vec!["save", "write", "write_file"]
+        vec![
+            "write",
+            "write_file",
+            "append",
+            "redirection",
+            "file",
+            "io",
+            ">",
+            ">>",
+        ]
     }
 
     fn signature(&self) -> nu_protocol::Signature {
         Signature::build("save")
             .required("filename", SyntaxShape::Filepath, "the filename to use")
             .switch("raw", "save file as raw binary", Some('r'))
-            .switch("append", "append input to the end of the file", None)
+            .switch("append", "append input to the end of the file", Some('a'))
             .category(Category::FileSystem)
     }
 
@@ -214,12 +223,17 @@ impl Command for Save {
     fn examples(&self) -> Vec<Example> {
         vec![
             Example {
-                description: "Save a string to foo.txt in current directory",
+                description: "Save a string to foo.txt in the current directory",
                 example: r#"echo 'save me' | save foo.txt"#,
                 result: None,
             },
             Example {
-                description: "Save a record to foo.json in current directory",
+                description: "Append a string to the end of foo.txt",
+                example: r#"echo 'append me' | save --append foo.txt"#,
+                result: None,
+            },
+            Example {
+                description: "Save a record to foo.json in the current directory",
                 example: r#"echo { a: 1, b: 2 } | save foo.json"#,
                 result: None,
             },

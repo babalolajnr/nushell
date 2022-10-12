@@ -6,7 +6,7 @@ use nu_protocol::{
     Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span, Value,
 };
 use std::time::{Duration, UNIX_EPOCH};
-use sysinfo::{ComponentExt, DiskExt, NetworkExt, ProcessorExt, System, SystemExt, UserExt};
+use sysinfo::{ComponentExt, CpuExt, DiskExt, NetworkExt, System, SystemExt, UserExt};
 
 #[derive(Clone)]
 pub struct Sys;
@@ -199,7 +199,7 @@ pub fn cpu(sys: &mut System, span: Span) -> Option<Value> {
     sys.refresh_cpu();
 
     let mut output = vec![];
-    for cpu in sys.processors() {
+    for cpu in sys.cpus() {
         let mut cols = vec![];
         let mut vals = vec![];
 
@@ -276,43 +276,43 @@ pub fn mem(sys: &mut System, span: Span) -> Option<Value> {
 
     cols.push("total".into());
     vals.push(Value::Filesize {
-        val: total_mem as i64 * 1000,
+        val: total_mem as i64,
         span,
     });
 
     cols.push("free".into());
     vals.push(Value::Filesize {
-        val: free_mem as i64 * 1000,
+        val: free_mem as i64,
         span,
     });
 
     cols.push("used".into());
     vals.push(Value::Filesize {
-        val: used_mem as i64 * 1000,
+        val: used_mem as i64,
         span,
     });
 
     cols.push("available".into());
     vals.push(Value::Filesize {
-        val: avail_mem as i64 * 1000,
+        val: avail_mem as i64,
         span,
     });
 
     cols.push("swap total".into());
     vals.push(Value::Filesize {
-        val: total_swap as i64 * 1000,
+        val: total_swap as i64,
         span,
     });
 
     cols.push("swap free".into());
     vals.push(Value::Filesize {
-        val: free_swap as i64 * 1000,
+        val: free_swap as i64,
         span,
     });
 
     cols.push("swap used".into());
     vals.push(Value::Filesize {
-        val: used_swap as i64 * 1000,
+        val: used_swap as i64,
         span,
     });
 

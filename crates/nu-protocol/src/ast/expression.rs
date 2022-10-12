@@ -30,8 +30,12 @@ impl Expression {
 
                 match operator {
                     Operator::Pow => 100,
-                    Operator::Multiply | Operator::Divide | Operator::Modulo => 95,
+                    Operator::Multiply
+                    | Operator::Divide
+                    | Operator::Modulo
+                    | Operator::FloorDivision => 95,
                     Operator::Plus | Operator::Minus => 90,
+                    Operator::ShiftLeft | Operator::ShiftRight => 85,
                     Operator::NotRegexMatch
                     | Operator::RegexMatch
                     | Operator::StartsWith
@@ -44,6 +48,9 @@ impl Expression {
                     | Operator::NotEqual
                     | Operator::In
                     | Operator::NotIn => 80,
+                    Operator::BitAnd => 75,
+                    Operator::BitXor => 70,
+                    Operator::BitOr => 60,
                     Operator::And => 50,
                     Operator::Or => 40,
                 }
@@ -162,6 +169,7 @@ impl Expression {
                 false
             }
             Expr::ImportPattern(_) => false,
+            Expr::Overlay(_) => false,
             Expr::Filepath(_) => false,
             Expr::Directory(_) => false,
             Expr::Float(_) => false,
@@ -330,6 +338,7 @@ impl Expression {
                     .replace_in_variable(working_set, new_var_id);
             }
             Expr::ImportPattern(_) => {}
+            Expr::Overlay(_) => {}
             Expr::Garbage => {}
             Expr::Nothing => {}
             Expr::GlobPattern(_) => {}
@@ -478,6 +487,7 @@ impl Expression {
                     .replace_span(working_set, replaced, new_span);
             }
             Expr::ImportPattern(_) => {}
+            Expr::Overlay(_) => {}
             Expr::Garbage => {}
             Expr::Nothing => {}
             Expr::GlobPattern(_) => {}

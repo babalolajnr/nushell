@@ -4,7 +4,8 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, SyntaxShape, Value,
+    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span, SyntaxShape,
+    Type, Value,
 };
 use sqlparser::ast::{
     Ident, Join, JoinConstraint, JoinOperator, Select, SetExpr, Statement, TableAlias,
@@ -15,7 +16,7 @@ pub struct JoinDb;
 
 impl Command for JoinDb {
     fn name(&self) -> &str {
-        "db join"
+        "join"
     }
 
     fn usage(&self) -> &str {
@@ -40,19 +41,68 @@ impl Command for JoinDb {
             .switch("right", "right outer join", Some('r'))
             .switch("outer", "full outer join", Some('o'))
             .switch("cross", "cross join", Some('c'))
+            .input_type(Type::Custom("database".into()))
+            .output_type(Type::Custom("database".into()))
             .category(Category::Custom("database".into()))
     }
 
     fn search_terms(&self) -> Vec<&str> {
-        vec!["database", "join"]
+        vec!["database"]
     }
 
     fn examples(&self) -> Vec<Example> {
-        vec![Example {
-            description: "",
-            example: "",
-            result: None,
-        }]
+        vec![
+            Example {
+                description: "joins two tables on col_b",
+                example: r#"open db.sqlite
+    | from table table_1 --as t1
+    | join table_2 col_b --as t2
+    | select col_a
+    | describe"#,
+                result: Some(Value::Record {
+                    cols: vec!["connection".into(), "query".into()],
+                    vals: vec![
+                        Value::String {
+                            val: "db.sqlite".into(),
+                            span: Span::test_data(),
+                        },
+                        Value::String {
+                            val: "SELECT col_a FROM table_1 AS t1 JOIN table_2 AS t2 ON col_b"
+                                .into(),
+                            span: Span::test_data(),
+                        },
+                    ],
+                    span: Span::test_data(),
+                }),
+            },
+            Example {
+                description: "joins a table with a derived table using aliases",
+                example: r#"open db.sqlite
+    | from table table_1 --as t1
+    | join (
+        open db.sqlite
+        | from table table_2
+        | select col_c
+      ) ((field t1.col_a) == (field t2.col_c)) --as t2 --right
+    | select col_a
+    | describe"#,
+                result: Some(Value::Record {
+                    cols: vec!["connection".into(), "query".into()],
+                    vals: vec![
+                        Value::String {
+                            val: "db.sqlite".into(),
+                            span: Span::test_data(),
+                        },
+                        Value::String {
+                            val: "SELECT col_a FROM table_1 AS t1 RIGHT JOIN (SELECT col_c FROM table_2) AS t2 ON t1.col_a = t2.col_c"
+                                .into(),
+                            span: Span::test_data(),
+                        },
+                    ],
+                    span: Span::test_data(),
+                }),
+            },
+        ]
     }
 
     fn run(
@@ -96,7 +146,7 @@ fn modify_statement(
 ) -> Result<Statement, ShellError> {
     match statement {
         Statement::Query(ref mut query) => {
-            match &mut query.body {
+            match &mut *query.body {
                 SetExpr::Select(ref mut select) => {
                     modify_from(connection, select, engine_state, stack, call)?
                 }
@@ -174,5 +224,25 @@ fn modify_from(
             None,
             Vec::new(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::super::super::expressions::{FieldExpr, OrExpr};
+    use super::super::{FromDb, ProjectionDb, WhereDb};
+    use super::*;
+    use crate::database::test_database::test_database;
+
+    #[test]
+    fn test_examples() {
+        test_database(vec![
+            Box::new(JoinDb {}),
+            Box::new(ProjectionDb {}),
+            Box::new(FromDb {}),
+            Box::new(WhereDb {}),
+            Box::new(FieldExpr {}),
+            Box::new(OrExpr {}),
+        ])
     }
 }

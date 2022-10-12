@@ -5,7 +5,8 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, SyntaxShape, Value,
+    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span, SyntaxShape,
+    Type, Value,
 };
 use sqlparser::ast::{Expr, OrderByExpr, Statement};
 
@@ -14,7 +15,7 @@ pub struct OrderByDb;
 
 impl Command for OrderByDb {
     fn name(&self) -> &str {
-        "db order-by"
+        "order-by"
     }
 
     fn usage(&self) -> &str {
@@ -24,29 +25,69 @@ impl Command for OrderByDb {
     fn signature(&self) -> Signature {
         Signature::build(self.name())
             .switch("ascending", "Order by ascending values", Some('a'))
-            .switch("nulls_first", "Show nulls first in order", Some('n'))
+            .switch("nulls-first", "Show nulls first in order", Some('n'))
             .rest(
                 "select",
                 SyntaxShape::Any,
                 "Select expression(s) on the table",
             )
+            .input_type(Type::Custom("database".into()))
+            .output_type(Type::Custom("database".into()))
             .category(Category::Custom("database".into()))
     }
 
     fn search_terms(&self) -> Vec<&str> {
-        vec!["database", "select"]
+        vec!["database"]
     }
 
     fn examples(&self) -> Vec<Example> {
-        vec![Example {
-            description: "orders query by a column",
-            example: r#"db open db.mysql 
-    | db from table_a 
-    | db select a 
-    | db order-by a 
-    | db describe"#,
-            result: None,
-        }]
+        vec![
+            Example {
+                description: "orders query by a column",
+                example: r#"open db.sqlite
+    | from table table_a
+    | select a
+    | order-by a
+    | describe"#,
+                result: Some(Value::Record {
+                    cols: vec!["connection".into(), "query".into()],
+                    vals: vec![
+                        Value::String {
+                            val: "db.sqlite".into(),
+                            span: Span::test_data(),
+                        },
+                        Value::String {
+                            val: "SELECT a FROM table_a ORDER BY a".into(),
+                            span: Span::test_data(),
+                        },
+                    ],
+                    span: Span::test_data(),
+                }),
+            },
+            Example {
+                description: "orders query by column a ascending and by column b",
+                example: r#"open db.sqlite
+    | from table table_a
+    | select a
+    | order-by a --ascending
+    | order-by b
+    | describe"#,
+                result: Some(Value::Record {
+                    cols: vec!["connection".into(), "query".into()],
+                    vals: vec![
+                        Value::String {
+                            val: "db.sqlite".into(),
+                            span: Span::test_data(),
+                        },
+                        Value::String {
+                            val: "SELECT a FROM table_a ORDER BY a ASC, b".into(),
+                            span: Span::test_data(),
+                        },
+                    ],
+                    span: Span::test_data(),
+                }),
+            },
+        ]
     }
 
     fn run(
@@ -57,7 +98,7 @@ impl Command for OrderByDb {
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
         let asc = call.has_flag("ascending");
-        let nulls_first = call.has_flag("nulls_first");
+        let nulls_first = call.has_flag("nulls-first");
         let expressions: Vec<Value> = call.rest(engine_state, stack, 0)?;
         let expressions = Value::List {
             vals: expressions,
@@ -154,4 +195,24 @@ fn update_connection(
     };
 
     Ok(db.into_value(call.head).into_pipeline_data())
+}
+
+#[cfg(test)]
+mod test {
+    use super::super::super::expressions::{FieldExpr, OrExpr};
+    use super::super::{FromDb, ProjectionDb, WhereDb};
+    use super::*;
+    use crate::database::test_database::test_database;
+
+    #[test]
+    fn test_examples() {
+        test_database(vec![
+            Box::new(OrderByDb {}),
+            Box::new(ProjectionDb {}),
+            Box::new(FromDb {}),
+            Box::new(WhereDb {}),
+            Box::new(FieldExpr {}),
+            Box::new(OrExpr {}),
+        ])
+    }
 }

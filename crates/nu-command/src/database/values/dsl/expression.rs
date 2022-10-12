@@ -52,7 +52,7 @@ impl CustomValue for ExprDb {
     fn follow_path_int(&self, count: usize, span: Span) -> Result<Value, ShellError> {
         let path = PathMember::Int { val: count, span };
 
-        ExprDb::expr_to_value(self.as_ref(), span).follow_cell_path(&[path])
+        ExprDb::expr_to_value(self.as_ref(), span).follow_cell_path(&[path], false)
     }
 
     fn follow_path_string(&self, column_name: String, span: Span) -> Result<Value, ShellError> {
@@ -61,7 +61,7 @@ impl CustomValue for ExprDb {
             span,
         };
 
-        ExprDb::expr_to_value(self.as_ref(), span).follow_cell_path(&[path])
+        ExprDb::expr_to_value(self.as_ref(), span).follow_cell_path(&[path], false)
     }
 
     fn typetag_name(&self) -> &'static str {
@@ -91,7 +91,7 @@ impl CustomValue for ExprDb {
             Value::Bool { val, .. } => Ok(Expr::Value(sqlparser::ast::Value::Boolean(*val))),
             _ => Err(ShellError::OperatorMismatch {
                 op_span: op,
-                lhs_ty: Type::Custom,
+                lhs_ty: Type::Custom(self.typetag_name().into()),
                 lhs_span,
                 rhs_ty: right.get_type(),
                 rhs_span: right.span()?,
@@ -112,11 +112,17 @@ impl CustomValue for ExprDb {
             Operator::Multiply => Ok(BinaryOperator::Multiply),
             Operator::Divide => Ok(BinaryOperator::Divide),
             Operator::Modulo => Ok(BinaryOperator::Modulo),
+            Operator::FloorDivision => Ok(BinaryOperator::Divide),
             Operator::And => Ok(BinaryOperator::And),
             Operator::Or => Ok(BinaryOperator::Or),
             Operator::In
             | Operator::NotIn
             | Operator::Pow
+            | Operator::BitOr
+            | Operator::BitXor
+            | Operator::BitAnd
+            | Operator::ShiftLeft
+            | Operator::ShiftRight
             | Operator::StartsWith
             | Operator::EndsWith => Err(ShellError::UnsupportedOperator(operator, op)),
         }?;
@@ -333,7 +339,7 @@ impl ExprDb {
             Expr::TypedString { .. } => todo!(),
             Expr::MapAccess { .. } => todo!(),
             Expr::Case { .. } => todo!(),
-            Expr::Exists(_) => todo!(),
+            Expr::Exists { .. } => todo!(),
             Expr::Subquery(_) => todo!(),
             Expr::ListAgg(_) => todo!(),
             Expr::GroupingSets(_) => todo!(),
@@ -342,6 +348,25 @@ impl ExprDb {
             Expr::Tuple(_) => todo!(),
             Expr::ArrayIndex { .. } => todo!(),
             Expr::Array(_) => todo!(),
+            Expr::JsonAccess { .. } => todo!(),
+            Expr::CompositeAccess { .. } => todo!(),
+            Expr::IsFalse(_) => todo!(),
+            Expr::IsNotFalse(_) => todo!(),
+            Expr::IsTrue(_) => todo!(),
+            Expr::IsNotTrue(_) => todo!(),
+            Expr::IsUnknown(_) => todo!(),
+            Expr::IsNotUnknown(_) => todo!(),
+            Expr::Like { .. } => todo!(),
+            Expr::ILike { .. } => todo!(),
+            Expr::SimilarTo { .. } => todo!(),
+            Expr::AnyOp(_) => todo!(),
+            Expr::AllOp(_) => todo!(),
+            Expr::SafeCast { .. } => todo!(),
+            Expr::AtTimeZone { .. } => todo!(),
+            Expr::Position { .. } => todo!(),
+            Expr::Overlay { .. } => todo!(),
+            Expr::AggregateExpressionWithFilter { .. } => todo!(),
+            Expr::ArraySubquery(_) => todo!(),
         }
     }
 }

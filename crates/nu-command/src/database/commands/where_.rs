@@ -5,7 +5,8 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, SyntaxShape, Value,
+    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span, SyntaxShape,
+    Type, Value,
 };
 use sqlparser::ast::{Expr, Query, Select, SetExpr, Statement};
 
@@ -14,7 +15,7 @@ pub struct WhereDb;
 
 impl Command for WhereDb {
     fn name(&self) -> &str {
-        "db where"
+        "where"
     }
 
     fn usage(&self) -> &str {
@@ -24,22 +25,37 @@ impl Command for WhereDb {
     fn signature(&self) -> Signature {
         Signature::build(self.name())
             .required("where", SyntaxShape::Any, "Where expression on the table")
+            .input_type(Type::Custom("database".into()))
+            .output_type(Type::Custom("database".into()))
             .category(Category::Custom("database".into()))
     }
 
     fn search_terms(&self) -> Vec<&str> {
-        vec!["database", "where"]
+        vec!["database"]
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "selects a column from a database with a where clause",
-            example: r#"db open db.mysql 
-    | db select a 
-    | db from table_1 
-    | db where ((db col a) > 1) 
-    | db describe"#,
-            result: None,
+            example: r#"open db.sqlite
+    | from table table_1
+    | select a
+    | where ((field a) > 1)
+    | describe"#,
+            result: Some(Value::Record {
+                cols: vec!["connection".into(), "query".into()],
+                vals: vec![
+                    Value::String {
+                        val: "db.sqlite".into(),
+                        span: Span::test_data(),
+                    },
+                    Value::String {
+                        val: "SELECT a FROM table_1 WHERE a > 1".into(),
+                        span: Span::test_data(),
+                    },
+                ],
+                span: Span::test_data(),
+            }),
         }]
     }
 
@@ -83,10 +99,10 @@ impl Command for WhereDb {
 }
 
 fn modify_query(query: &mut Box<Query>, expression: Expr) {
-    match query.body {
+    match *query.body {
         SetExpr::Select(ref mut select) => modify_select(select, expression),
         _ => {
-            query.as_mut().body = SetExpr::Select(Box::new(create_select(expression)));
+            query.as_mut().body = Box::new(SetExpr::Select(Box::new(create_select(expression))));
         }
     };
 }
@@ -109,5 +125,26 @@ fn create_select(expression: Expr) -> Select {
         distribute_by: Vec::new(),
         sort_by: Vec::new(),
         having: None,
+        qualify: None,
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::super::super::expressions::{FieldExpr, OrExpr};
+    use super::super::{FromDb, ProjectionDb};
+    use super::*;
+    use crate::database::test_database::test_database;
+
+    #[test]
+    fn test_examples() {
+        test_database(vec![
+            Box::new(WhereDb {}),
+            Box::new(ProjectionDb {}),
+            Box::new(FromDb {}),
+            Box::new(WhereDb {}),
+            Box::new(FieldExpr {}),
+            Box::new(OrExpr {}),
+        ])
     }
 }

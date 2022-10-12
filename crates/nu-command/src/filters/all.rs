@@ -10,7 +10,7 @@ pub struct All;
 
 impl Command for All {
     fn name(&self) -> &str {
-        "all?"
+        "all"
     }
 
     fn signature(&self) -> Signature {
@@ -18,29 +18,29 @@ impl Command for All {
             .required(
                 "predicate",
                 SyntaxShape::RowCondition,
-                "the predicate that must match",
+                "the predicate expression that must evaluate to a boolean",
             )
             .category(Category::Filters)
     }
 
     fn usage(&self) -> &str {
-        "Test if every element of the input matches a predicate."
+        "Test if every element of the input fulfills a predicate expression."
     }
 
     fn search_terms(&self) -> Vec<&str> {
-        vec!["every"]
+        vec!["every", "and"]
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![
             Example {
                 description: "Find if services are running",
-                example: "echo [[status]; [UP] [UP]] | all? status == UP",
+                example: "echo [[status]; [UP] [UP]] | all status == UP",
                 result: Some(Value::test_bool(true)),
             },
             Example {
                 description: "Check that all values are even",
-                example: "echo [2 4 6 8] | all? ($it mod 2) == 0",
+                example: "echo [2 4 6 8] | all ($it mod 2) == 0",
                 result: Some(Value::test_bool(true)),
             },
         ]
@@ -66,27 +66,31 @@ impl Command for All {
         let ctrlc = engine_state.ctrlc.clone();
         let engine_state = engine_state.clone();
 
-        Ok(Value::Bool {
-            val: input.into_interruptible_iter(ctrlc).all(move |value| {
-                if let Some(var_id) = var_id {
-                    stack.add_var(var_id, value);
-                }
+        for value in input.into_interruptible_iter(ctrlc) {
+            if let Some(var_id) = var_id {
+                stack.add_var(var_id, value);
+            }
 
-                eval_block(
-                    &engine_state,
-                    &mut stack,
-                    block,
-                    PipelineData::new(span),
-                    call.redirect_stdout,
-                    call.redirect_stderr,
-                )
-                .map_or(false, |pipeline_data| {
-                    pipeline_data.into_value(span).is_true()
-                })
-            }),
-            span,
+            let eval = eval_block(
+                &engine_state,
+                &mut stack,
+                block,
+                PipelineData::new(span),
+                call.redirect_stdout,
+                call.redirect_stderr,
+            );
+            match eval {
+                Err(e) => {
+                    return Err(e);
+                }
+                Ok(pipeline_data) => {
+                    if !pipeline_data.into_value(span).is_true() {
+                        return Ok(Value::Bool { val: false, span }.into_pipeline_data());
+                    }
+                }
+            }
         }
-        .into_pipeline_data())
+        Ok(Value::Bool { val: true, span }.into_pipeline_data())
     }
 }
 

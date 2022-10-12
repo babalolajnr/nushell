@@ -1,10 +1,9 @@
-use super::super::values::{utils::DEFAULT_ROWS, Column, NuDataFrame};
-use crate::dataframe::values::NuExpression;
+use super::super::values::{Column, NuDataFrame};
 use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
 };
 
 #[derive(Clone)]
@@ -12,37 +11,56 @@ pub struct FirstDF;
 
 impl Command for FirstDF {
     fn name(&self) -> &str {
-        "dfr first"
+        "first"
     }
 
     fn usage(&self) -> &str {
-        "Creates new dataframe with first rows or creates a first expression"
+        "Show only the first number of rows."
     }
 
     fn signature(&self) -> Signature {
         Signature::build(self.name())
-            .optional("rows", SyntaxShape::Int, "Number of rows for head")
+            .optional(
+                "rows",
+                SyntaxShape::Int,
+                "starting from the front, the number of rows to return",
+            )
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![
             Example {
-                description: "Create new dataframe with head rows",
-                example: "[[a b]; [1 2] [3 4]] | dfr to-df | dfr first 1",
+                description: "Return the first row of a dataframe",
+                example: "[[a b]; [1 2] [3 4]] | into df | first",
                 result: Some(
                     NuDataFrame::try_from_columns(vec![
                         Column::new("a".to_string(), vec![Value::test_int(1)]),
                         Column::new("b".to_string(), vec![Value::test_int(2)]),
                     ])
-                    .expect("simple df for test should not fail")
+                    .expect("should not fail")
                     .into_value(Span::test_data()),
                 ),
             },
             Example {
-                description: "Creates a first expression from a column",
-                example: "dfr col a | dfr first",
-                result: None,
+                description: "Return the first two rows of a dataframe",
+                example: "[[a b]; [1 2] [3 4]] | into df | first 2",
+                result: Some(
+                    NuDataFrame::try_from_columns(vec![
+                        Column::new(
+                            "a".to_string(),
+                            vec![Value::test_int(1), Value::test_int(3)],
+                        ),
+                        Column::new(
+                            "b".to_string(),
+                            vec![Value::test_int(2), Value::test_int(4)],
+                        ),
+                    ])
+                    .expect("should not fail")
+                    .into_value(Span::test_data()),
+                ),
             },
         ]
     }
@@ -54,27 +72,8 @@ impl Command for FirstDF {
         call: &Call,
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        let value = input.into_value(call.head);
-
-        if NuExpression::can_downcast(&value) {
-            let expr = NuExpression::try_from_value(value)?;
-            let expr: NuExpression = expr.into_polars().is_null().into();
-
-            Ok(PipelineData::Value(
-                NuExpression::into_value(expr, call.head),
-                None,
-            ))
-        } else if NuDataFrame::can_downcast(&value) {
-            let df = NuDataFrame::try_from_value(value)?;
-            command(engine_state, stack, call, df)
-        } else {
-            Err(ShellError::CantConvert(
-                "expression or query".into(),
-                value.get_type().to_string(),
-                value.span()?,
-                None,
-            ))
-        }
+        let df = NuDataFrame::try_from_pipeline(input, call.head)?;
+        command(engine_state, stack, call, df)
     }
 }
 
@@ -85,7 +84,7 @@ fn command(
     df: NuDataFrame,
 ) -> Result<PipelineData, ShellError> {
     let rows: Option<usize> = call.opt(engine_state, stack, 0)?;
-    let rows = rows.unwrap_or(DEFAULT_ROWS);
+    let rows = rows.unwrap_or(1);
 
     let res = df.as_ref().head(Some(rows));
     Ok(PipelineData::Value(

@@ -54,6 +54,11 @@ impl Command for ToMd {
                     "# Welcome to Nushell\n| foo | bar |\n| --- | --- |\n| 1   | 2   |",
                 )),
             },
+            Example {
+                description: "Render a list",
+                example: "[0 1 2] | to md --pretty",
+                result: Some(Value::test_string("0\n1\n2")),
+            },
         ]
     }
 
@@ -105,7 +110,7 @@ fn fragment(input: Value, pretty: bool, config: &Config) -> String {
     let mut out = String::new();
 
     if headers.len() == 1 {
-        let markup = match (&headers[0]).to_ascii_lowercase().as_ref() {
+        let markup = match headers[0].to_ascii_lowercase().as_ref() {
             "h1" => "# ".to_string(),
             "h2" => "## ".to_string(),
             "h3" => "### ".to_string(),
@@ -164,7 +169,7 @@ fn table(input: PipelineData, pretty: bool, config: &Config) -> String {
                     let data = row.get_data_by_key(&headers[i]);
                     let value_string = data
                         .unwrap_or_else(|| Value::nothing(span))
-                        .into_string("|", config);
+                        .into_string(", ", config);
                     let new_column_width = value_string.len();
 
                     escaped_row.push(value_string);
@@ -291,7 +296,7 @@ fn get_output_string(
         }
 
         for i in 0..row.len() {
-            if pretty {
+            if pretty && column_widths.get(i).is_some() {
                 output_string.push(' ');
                 output_string.push_str(&get_padded_string(row[i].clone(), column_widths[i], ' '));
                 output_string.push(' ');

@@ -27,7 +27,7 @@ impl Command for Module {
 
     fn extra_usage(&self) -> &str {
         r#"This command is a parser keyword. For details, check:
-  https://www.nushell.sh/book/thinking_in_nushell.html"#
+  https://www.nushell.sh/book/thinking_in_nu.html"#
     }
 
     fn is_parser_keyword(&self) -> bool {
@@ -55,8 +55,8 @@ impl Command for Module {
                 }),
             },
             Example {
-                description: "Define an environment variable in a module and evaluate it",
-                example: r#"module foo { export env FOO_ENV { "BAZ" } }; use foo FOO_ENV; $env.FOO_ENV"#,
+                description: "Define an environment variable in a module",
+                example: r#"module foo { export-env { let-env FOO = "BAZ" } }; use foo; $env.FOO"#,
                 result: Some(Value::String {
                     val: "BAZ".to_string(),
                     span: Span::test_data(),

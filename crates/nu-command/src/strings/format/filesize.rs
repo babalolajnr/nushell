@@ -34,6 +34,10 @@ impl Command for FileSize {
         "Converts a column of filesizes to some specified format"
     }
 
+    fn search_terms(&self) -> Vec<&str> {
+        vec!["convert", "display", "pattern", "human readable"]
+    }
+
     fn run(
         &self,
         engine_state: &EngineState,

@@ -18,6 +18,10 @@ impl Command for SubCommand {
         "Applies the floor function to a list of numbers"
     }
 
+    fn search_terms(&self) -> Vec<&str> {
+        vec!["round down", "rounding", "integer"]
+    }
+
     fn run(
         &self,
         engine_state: &EngineState,
